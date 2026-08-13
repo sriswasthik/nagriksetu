@@ -1,19 +1,31 @@
 import { Badge } from "@/components/ui/badge";
-import { STATUS_LABELS, type ComplaintStatus } from "@/types/complaint";
+import { type ComplaintStatus } from "@/types/complaint";
+
+const STATUS_LABELS: Record<ComplaintStatus, string> = {
+  submitted: 'Submitted',
+  ai_analyzed: 'AI Analyzed',
+  assigned: 'Assigned',
+  accepted: 'Accepted',
+  in_progress: 'In Progress',
+  proof_submitted: 'Proof Submitted',
+  supervisor_review: 'Under Review',
+  citizen_confirmation: 'Awaiting Confirmation',
+  resolved: 'Resolved',
+  reopened: 'Reopened',
+  rejected: 'Rejected',
+};
 
 export function StatusBadge({ status, className }: { status: ComplaintStatus; className?: string }) {
   const getVariant = (s: ComplaintStatus) => {
     switch (s) {
       case "resolved":
-      case "verified":
         return "success";
       case "rejected":
         return "destructive";
       case "submitted":
-      case "triaged":
       case "assigned":
         return "warning";
-      case "ai_processing":
+      case "ai_analyzed":
       case "in_progress":
       case "accepted":
         return "info";
@@ -21,6 +33,8 @@ export function StatusBadge({ status, className }: { status: ComplaintStatus; cl
       case "supervisor_review":
       case "citizen_confirmation":
         return "secondary";
+      case "reopened":
+        return "default";
       default:
         return "default";
     }

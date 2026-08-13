@@ -1,57 +1,185 @@
-import { mockSession, mockCurrentUser } from '../mock/users';
-import type { LoginCredentials, RegisterData, AuthSession, User } from '@/types/user';
+import { createClient } from "@/lib/supabase/client";
 
-// Simulate network delay
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+export interface SignUpInput {
+  fullName: string;
+  email: string;
+  password: string;
+  phone?: string;
+}
+
+export interface SignInInput {
+  email: string;
+  password: string;
+}
+
+export async function signUp({
+  fullName,
+  email,
+  password,
+  phone,
+}: SignUpInput) {
+  const supabase = createClient();
+
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        full_name: fullName,
+        phone: phone ?? null,
+      },
+    },
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+export async function signIn({
+  email,
+  password,
+}: SignInInput) {
+  const supabase = createClient();
+
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+export async function signOut() {
+  const supabase = createClient();
+
+  const { error } = await supabase.auth.signOut();
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function getCurrentUser() {
+  const supabase = createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return user;
+}
+
+export async function getCurrentProfile() {
+  const supabase = createClient();
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError) {
+    throw userError;
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", user.id)
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
 
 export const authService = {
-  async login(credentials: LoginCredentials): Promise<AuthSession> {
-    await delay(1000);
+  login: async (credentials: { identifier: string; otp: string }) => {
+    const supabase = createClient();
+    const email = credentials.identifier.includes('@') ? credentials.identifier : `${credentials.identifier}@nagriksetu.temp`;
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password: "placeholder-no-passwords-in-nagriksetu",
+    });
+
+    if (error) throw error;
     
-    // Accept any login for demo purposes
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", data.user.id)
+      .single();
+      
     return {
-      ...mockSession,
+      ...data,
       user: {
-        ...mockSession.user,
-        email: credentials.identifier.includes('@') ? credentials.identifier : mockSession.user.email,
-        mobile: !credentials.identifier.includes('@') ? credentials.identifier : mockSession.user.mobile,
+        ...data.user,
+        role: profile?.role || data.user.user_metadata?.role || "citizen"
       }
     };
   },
-
-  async register(data: RegisterData): Promise<User> {
-    await delay(1000);
+  
+  register: async (userData: { name: string; mobile: string; email: string; password?: string; role: string }) => {
+    const supabase = createClient();
+    const email = userData.email || `${userData.mobile}@nagriksetu.temp`;
     
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password: userData.password || "placeholder-no-passwords-in-nagriksetu",
+      options: {
+        data: {
+          full_name: userData.name,
+          phone: userData.mobile,
+          role: userData.role
+        }
+      }
+    });
+    
+    if (error) throw error;
+    return data;
+  },
+
+  getCurrentUser: async () => {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) return null;
+    
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", user.id)
+      .single();
+      
     return {
-      id: `usr_${Date.now()}`,
-      name: data.name,
-      email: data.email,
-      mobile: data.mobile,
-      role: data.role,
-      isVerified: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+      id: user.id,
+      name: profile?.full_name || user.user_metadata?.full_name || "User",
+      email: user.email || "",
+      avatar: profile?.avatar_url || "",
+      role: profile?.role || user.user_metadata?.role || "citizen",
+      department: profile?.department,
+      mobile: profile?.phone || "",
+      isVerified: true,
+      createdAt: user.created_at || new Date().toISOString(),
+      updatedAt: user.updated_at || user.created_at || new Date().toISOString(),
+    } as any;
   },
-
-  async verifyOtp(mobile: string, otp: string): Promise<AuthSession> {
-    await delay(800);
-    
-    if (otp !== '123456') {
-      throw new Error('Invalid OTP');
-    }
-
-    return mockSession;
-  },
-
-  async getCurrentUser(): Promise<User | null> {
-    await delay(300);
-    // In a real app, check token from cookies/localStorage
-    return mockCurrentUser;
-  },
-
-  async logout(): Promise<void> {
-    await delay(500);
-    // Clear cookies/localStorage in real app
+  
+  logout: async () => {
+    const supabase = createClient();
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
   }
 };

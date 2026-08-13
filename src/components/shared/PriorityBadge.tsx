@@ -1,5 +1,12 @@
 import { Badge } from "@/components/ui/badge";
-import { PRIORITY_LABELS, type PriorityLevel } from "@/types/complaint";
+import { type PriorityLevel } from "@/types/complaint";
+
+const PRIORITY_LABELS: Record<PriorityLevel, string> = {
+  critical: 'Critical',
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+};
 
 export function PriorityBadge({ level, score, className }: { level: PriorityLevel; score?: number; className?: string }) {
   const getVariant = (l: PriorityLevel) => {

@@ -1,4 +1,12 @@
-import type { ComplaintMedia, PriorityLevel } from './complaint';
+import { type PriorityLevel } from './complaint';
+
+export interface ComplaintMedia {
+  id: string;
+  url: string;
+  type: 'image' | 'video' | 'audio';
+  caption?: string;
+  uploadedAt: string;
+}
 
 export type WorkOrderStatus =
   | 'created'

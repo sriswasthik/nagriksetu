@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/shared/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { FileText, CheckCircle2, AlertTriangle, ArrowRight, Loader2, MapPin } from "lucide-react";
-import { complaintService } from "@/lib/services/complaints";
+import { getMyComplaints } from "@/lib/services/complaints";
 import { authService } from "@/lib/services/auth";
 import type { Complaint } from "@/types/complaint";
 import { StatusBadge } from "@/components/shared/StatusBadge";
@@ -24,8 +24,8 @@ export default function CitizenDashboard() {
         const user = await authService.getCurrentUser();
         if (user) setUserName(user.name.split(' ')[0]);
 
-        // Get all complaints for citizen (mocked to return all for demo)
-        const allComplaints = await complaintService.getComplaints();
+        // Get all complaints for citizen
+        const allComplaints = await getMyComplaints();
         setComplaints(allComplaints);
       } catch (error) {
         console.error("Failed to load dashboard data", error);
@@ -147,18 +147,18 @@ export default function CitizenDashboard() {
                 <CardContent className="flex-1">
                   <div className="text-sm text-muted-foreground flex items-center gap-2 mb-2">
                     <MapPin className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{complaint.location.address}</span>
+                    <span className="truncate">{complaint.address}</span>
                   </div>
-                  {complaint.priorityLevel && (
+                  {complaint.priority_level && (
                     <div className="mt-3">
-                      <PriorityBadge level={complaint.priorityLevel} />
+                      <PriorityBadge level={complaint.priority_level} />
                     </div>
                   )}
                 </CardContent>
                 <div className="p-6 pt-0 mt-auto">
                   <div className="flex items-center justify-between">
                     <span className="text-xs text-muted-foreground">
-                      Updated {formatRelativeTime(complaint.updatedAt)}
+                      Updated {formatRelativeTime(complaint.updated_at)}
                     </span>
                     <Link href={`/citizen/complaints/${complaint.id}`}>
                       <Button variant="ghost" size="sm" className="h-8 -mr-3">

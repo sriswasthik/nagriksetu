@@ -1,6 +1,6 @@
 import { mockWorkOrders } from '../mock/workOrders';
 import type { WorkOrder, WorkOrderStatus, WorkOrderUpdate } from '@/types/workOrder';
-import { complaintService } from './complaints';
+
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -54,15 +54,15 @@ export const workOrderService = {
     
     workOrdersStore[index] = updated;
 
-    // Sync with complaint status
+    // Sync with complaint status (temporarily disabled while moving to Supabase)
     if (update.status === 'proof_submitted') {
-      await complaintService.updateComplaintStatus(current.complaintId, 'proof_submitted');
+      // await complaintService.updateComplaintStatus(current.complaintId, 'proof_submitted');
     } else if (update.status === 'completed') {
-       await complaintService.updateComplaintStatus(current.complaintId, 'resolved');
+       // await complaintService.updateComplaintStatus(current.complaintId, 'resolved');
     } else if (update.status === 'accepted') {
-      await complaintService.updateComplaintStatus(current.complaintId, 'accepted');
+      // await complaintService.updateComplaintStatus(current.complaintId, 'accepted');
     } else if (update.status === 'in_progress') {
-       await complaintService.updateComplaintStatus(current.complaintId, 'in_progress');
+       // await complaintService.updateComplaintStatus(current.complaintId, 'in_progress');
     }
 
     return updated;
