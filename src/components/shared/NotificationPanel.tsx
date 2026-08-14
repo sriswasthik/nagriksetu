@@ -1,124 +1,202 @@
 "use client";
 
-import { useState } from 'react';
-import { Bell } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Bell, ChevronRight } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
-} from '@/components/ui/sheet';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { cn, formatRelativeTime } from '@/lib/utils';
-import type { NotificationItem } from '@/types/analytics';
+} from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn, formatRelativeTime } from "@/lib/utils";
+import { getStatusMeta, getToneClasses } from "@/lib/design/status";
+import { getMyComplaints } from "@/lib/services/complaints";
+import type { Complaint } from "@/types/complaint";
 
-// Mock notifications
-const mockNotifications: NotificationItem[] = [
-  {
-    id: 'notif_1',
-    title: 'Work Order Accepted',
-    message: 'Your complaint CMP-2026-001 has been assigned to a field officer.',
-    type: 'success',
-    isRead: false,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'notif_2',
-    title: 'Duplicate Detected',
-    message: 'A report similar to yours was recently filed.',
-    type: 'warning',
-    isRead: false,
-    createdAt: new Date(Date.now() - 3600000).toISOString()
-  },
-  {
-    id: 'notif_3',
-    title: 'Resolution Pending',
-    message: 'Please confirm if complaint CMP-2026-012 has been resolved.',
-    type: 'info',
-    isRead: true,
-    createdAt: new Date(Date.now() - 86400000).toISOString()
-  }
-];
+/**
+ * Header notification tray.
+ *
+ * Shows real status changes on the citizen's own reports. The
+ * previous implementation rendered three hard-coded fake
+ * notifications referencing complaint numbers that did not exist,
+ * which is misleading in a civic product — this reads the actual
+ * complaints instead.
+ *
+ * Statuses that genuinely need the user to act are counted as
+ * "needs attention" and drive the badge.
+ */
+const ATTENTION_STATUSES = ["citizen_confirmation", "reopened", "resolved"];
 
 export function NotificationPanel() {
-  const [notifications, setNotifications] = useState<NotificationItem[]>(mockNotifications);
-  
-  const unreadCount = notifications.filter(n => !n.isRead).length;
+  const pathname = usePathname();
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [open, setOpen] = useState(false);
 
-  const markAllAsRead = () => {
-    setNotifications(notifications.map(n => ({ ...n, isRead: true })));
-  };
+  // Only the citizen workspace has a per-user report feed to show.
+  const isCitizen = pathname.startsWith("/citizen");
 
-  const getNotificationColor = (type: string) => {
-    switch (type) {
-      case 'success': return 'bg-emerald-500';
-      case 'warning': return 'bg-amber-500';
-      case 'error': return 'bg-red-500';
-      default: return 'bg-blue-500';
+  useEffect(() => {
+    if (!isCitizen) {
+      setIsLoading(false);
+      return;
     }
-  };
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const data = await getMyComplaints();
+        if (!cancelled) setComplaints(data);
+      } catch (error) {
+        // A failed tray fetch must never break the header.
+        console.error("Failed to load notifications", error);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isCitizen, pathname]);
+
+  const recent = [...complaints]
+    .sort(
+      (a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    )
+    .slice(0, 6);
+
+  const attentionCount = complaints.filter((c) =>
+    ATTENTION_STATUSES.includes(c.status)
+  ).length;
 
   return (
-    <Sheet>
+    <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="icon" className="relative">
-          <Bell className="h-5 w-5 text-muted-foreground" />
-          {unreadCount > 0 && (
-            <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-destructive animate-pulse-subtle" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="relative"
+          aria-label={
+            attentionCount > 0
+              ? `Notifications, ${attentionCount} needing attention`
+              : "Notifications"
+          }
+        >
+          <Bell className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+          {attentionCount > 0 && (
+            <span
+              aria-hidden="true"
+              className="tabular absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[0.625rem] font-bold text-primary-foreground"
+            >
+              {attentionCount > 9 ? "9+" : attentionCount}
+            </span>
           )}
-          <span className="sr-only">Notifications</span>
         </Button>
       </SheetTrigger>
-      <SheetContent side="right" className="w-full sm:w-[400px] sm:max-w-md p-0 flex flex-col">
-        <SheetHeader className="px-6 py-4 border-b">
-          <div className="flex items-center justify-between">
-            <SheetTitle>Notifications</SheetTitle>
-            {unreadCount > 0 && (
-              <Button variant="ghost" size="sm" onClick={markAllAsRead} className="h-8 text-xs text-primary">
-                Mark all as read
-              </Button>
-            )}
-          </div>
+
+      <SheetContent
+        side="right"
+        className="flex w-full flex-col p-0 sm:w-[400px] sm:max-w-md"
+      >
+        <SheetHeader className="border-b px-5 py-4 text-left">
+          <SheetTitle>Notifications</SheetTitle>
         </SheetHeader>
-        <ScrollArea className="flex-1">
-          <div className="flex flex-col">
-            {notifications.length === 0 ? (
-              <div className="flex flex-col items-center justify-center p-8 text-center text-muted-foreground">
-                <Bell className="h-12 w-12 opacity-20 mb-4" />
-                <p>No new notifications</p>
-              </div>
-            ) : (
-              notifications.map((notification) => (
-                <div 
-                  key={notification.id}
-                  className={cn(
-                    "relative flex flex-col gap-1 p-4 border-b hover:bg-muted/50 transition-colors cursor-pointer",
-                    !notification.isRead && "bg-accent/30"
-                  )}
-                  onClick={() => {
-                    setNotifications(notifications.map(n => n.id === notification.id ? { ...n, isRead: true } : n));
-                  }}
-                >
-                  {!notification.isRead && (
-                    <span className="absolute left-2 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full bg-primary" />
-                  )}
-                  <div className="flex items-center gap-2 pl-4">
-                    <span className={cn("h-2 w-2 rounded-full", getNotificationColor(notification.type))} />
-                    <span className="text-sm font-semibold text-foreground">{notification.title}</span>
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      {formatRelativeTime(notification.createdAt)}
-                    </span>
-                  </div>
-                  <p className="pl-4 text-sm text-muted-foreground line-clamp-2">
-                    {notification.message}
-                  </p>
-                </div>
-              ))
-            )}
+
+        <div className="flex-1 overflow-y-auto">
+          {isLoading ? (
+            <div className="space-y-3 p-4">
+              {Array.from({ length: 3 }).map((_, index) => (
+                <Skeleton key={index} className="h-16 rounded-lg" />
+              ))}
+            </div>
+          ) : recent.length === 0 ? (
+            <div className="flex flex-col items-center justify-center px-6 py-14 text-center">
+              <Bell
+                className="h-9 w-9 text-muted-foreground opacity-30"
+                aria-hidden="true"
+              />
+              <p className="mt-3.5 text-sm font-medium text-foreground">
+                No updates yet
+              </p>
+              <p className="mt-1 max-w-[15rem] text-xs leading-relaxed text-muted-foreground">
+                {isCitizen
+                  ? "Updates on your reports will appear here."
+                  : "Report updates appear in your workspace."}
+              </p>
+            </div>
+          ) : (
+            <ul className="divide-y">
+              {recent.map((complaint) => {
+                const meta = getStatusMeta(complaint.status);
+                const tone = getToneClasses(meta.tone);
+                const Icon = meta.icon;
+                const needsAttention = ATTENTION_STATUSES.includes(
+                  complaint.status
+                );
+
+                return (
+                  <li key={complaint.id}>
+                    <Link
+                      href={`/citizen/complaints/${complaint.id}`}
+                      onClick={() => setOpen(false)}
+                      className={cn(
+                        "flex gap-3 px-4 py-3.5 transition-colors hover:bg-muted/50",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                        needsAttention && "bg-primary/[0.04]"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border",
+                          tone.badge
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+                      </span>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-sm font-semibold text-foreground">
+                            {meta.label}
+                          </p>
+                          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                            {formatRelativeTime(complaint.updated_at)}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                          {complaint.title}
+                        </p>
+                      </div>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        {isCitizen && (
+          <div className="border-t p-3">
+            <Button asChild variant="ghost" className="w-full justify-between">
+              <Link
+                href="/citizen/notifications"
+                onClick={() => setOpen(false)}
+              >
+                View all notifications
+                <ChevronRight className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Button>
           </div>
-        </ScrollArea>
+        )}
       </SheetContent>
     </Sheet>
   );

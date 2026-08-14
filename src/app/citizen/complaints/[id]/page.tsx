@@ -1,206 +1,45 @@
 "use client";
 
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
-  useEffect,
-  useState,
-} from "react";
-
-import {
-  useSearchParams,
-} from "next/navigation";
-
-import {
-  processComplaintWithAI,
-} from "@/lib/services/ai";
-
-import Link from "next/link";
-
-import {
-  useParams,
-  useRouter,
-} from "next/navigation";
-
-import {
-  ArrowLeft,
-  CheckCircle2,
+  Building2,
   Clock3,
   FileText,
+  ImageOff,
   Loader2,
   MapPin,
   RefreshCw,
-  ShieldCheck,
   Sparkles,
-  UserCheck,
 } from "lucide-react";
 
+import { PageHeader } from "@/components/shared/PageHeader";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { PriorityBadge } from "@/components/shared/PriorityBadge";
+import { IssueTimeline } from "@/components/shared/IssueTimeline";
+import { CopyButton } from "@/components/shared/CopyButton";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { StaticLocationMap } from "@/components/map/StaticLocationMap";
+import {
+  PageHeaderSkeleton,
+  TimelineSkeleton,
+} from "@/components/shared/skeletons";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { formatDateTime } from "@/lib/utils";
+import { formatCategory, getStatusMeta } from "@/lib/design/status";
 import {
   getComplaintDetails,
   type ComplaintDetails,
 } from "@/lib/services/complaints";
-
-import type {
-  ComplaintStatus,
-} from "@/types/complaint";
-
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-
-import {
-  Badge,
-} from "@/components/ui/badge";
-
-import {
-  Button,
-} from "@/components/ui/button";
-
-import {
-  Separator,
-} from "@/components/ui/separator";
-
-import {
-  StatusBadge,
-} from "@/components/shared/StatusBadge";
-
-import {
-  PriorityBadge,
-} from "@/components/shared/PriorityBadge";
-
-
-/*
- * ============================================================
- * STATUS HELPERS
- * ============================================================
- */
-
-function getStatusLabel(
-  status: ComplaintStatus
-): string {
-  const labels: Record<
-    ComplaintStatus,
-    string
-  > = {
-    submitted:
-      "Submitted",
-
-    ai_analyzed:
-      "AI Analysis Complete",
-
-    assigned:
-      "Department Assigned",
-
-    accepted:
-      "Accepted by Officer",
-
-    in_progress:
-      "Work in Progress",
-
-    proof_submitted:
-      "Proof Submitted",
-
-    supervisor_review:
-      "Supervisor Review",
-
-    citizen_confirmation:
-      "Awaiting Confirmation",
-
-    resolved:
-      "Resolved",
-
-    reopened:
-      "Reopened",
-
-    rejected:
-      "Rejected",
-  };
-
-  return labels[status] ?? status;
-}
-
-
-/*
- * ============================================================
- * TIMELINE STATUS
- * ============================================================
- */
-
-const timelineSteps = [
-  {
-    key: "submitted",
-    title: "Complaint Submitted",
-    description:
-      "Your complaint has been successfully registered.",
-    icon: FileText,
-  },
-
-  {
-    key: "ai_analyzed",
-    title: "AI Analysis",
-    description:
-      "The complaint will be analyzed and prioritized.",
-    icon: Sparkles,
-  },
-
-  {
-    key: "assigned",
-    title: "Department Assignment",
-    description:
-      "The complaint will be routed to the appropriate department.",
-    icon: UserCheck,
-  },
-
-  {
-    key: "in_progress",
-    title: "Officer Action",
-    description:
-      "A responsible officer will work on the issue.",
-    icon: Clock3,
-  },
-
-  {
-    key: "resolved",
-    title: "Resolution",
-    description:
-      "The issue will be marked resolved after completion.",
-    icon: CheckCircle2,
-  },
-];
-
-
-/*
- * ============================================================
- * STATUS ORDER
- * ============================================================
- */
-
-const statusOrder: ComplaintStatus[] = [
-  "submitted",
-  "ai_analyzed",
-  "assigned",
-  "accepted",
-  "in_progress",
-  "proof_submitted",
-  "supervisor_review",
-  "citizen_confirmation",
-  "resolved",
-];
-
-
-/*
- * ============================================================
- * PAGE
- * ============================================================
- */
+import { processComplaintWithAI } from "@/lib/services/ai";
 
 export default function ComplaintDetailsPage() {
-  const params =
-    useParams();
-
-  const router =
-    useRouter();
+  const params = useParams();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   const complaintId =
     typeof params.id === "string"
@@ -209,790 +48,427 @@ export default function ComplaintDetailsPage() {
         ? params.id[0]
         : "";
 
-  const searchParams =
-    useSearchParams();
+  const shouldProcessAI = searchParams.get("process") === "ai";
 
-  const shouldProcessAI =
-    searchParams.get("process") === "ai";
+  const [details, setDetails] = useState<ComplaintDetails | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  /*
-   * ----------------------------------------------------------
-   * STATE
-   * ----------------------------------------------------------
-   */
+  // Guards the one-shot AI trigger against StrictMode double-invoke.
+  const aiTriggered = useRef(false);
 
-  const [
-    details,
-    setDetails,
-  ] = useState<ComplaintDetails | null>(
-    null
-  );
+  const loadDetails = useCallback(
+    async (showLoader = true) => {
+      if (!complaintId) {
+        setError("That report reference isn't valid.");
+        setIsLoading(false);
+        return;
+      }
 
-  const [
-    isLoading,
-    setIsLoading,
-  ] = useState(true);
+      if (showLoader) {
+        setIsLoading(true);
+      } else {
+        setIsRefreshing(true);
+      }
 
-  const [
-    error,
-    setError,
-  ] = useState<string | null>(
-    null
-  );
+      setError(null);
 
-  const [
-    isRefreshing,
-    setIsRefreshing,
-  ] = useState(false);
-
-
-  /*
-   * ==========================================================
-   * LOAD DETAILS
-   * ==========================================================
-   */
-
-  async function loadDetails(
-    showLoader = true
-  ) {
-    if (!complaintId) {
-      setError(
-        "Invalid complaint ID."
-      );
-
-      setIsLoading(false);
-
-      return;
-    }
-
-    if (showLoader) {
-      setIsLoading(true);
-    } else {
-      setIsRefreshing(true);
-    }
-
-    setError(null);
-
-    try {
-      const result =
-        await getComplaintDetails(
-          complaintId
+      try {
+        const result = await getComplaintDetails(complaintId);
+        setDetails(result);
+      } catch (loadError) {
+        console.error("Failed to load complaint details:", loadError);
+        setError(
+          "We couldn't load this report. It may have been removed, or you may not have permission to view it."
         );
-
-      setDetails(result);
-    } catch (loadError) {
-      console.error(
-        "Failed to load complaint details:",
-        loadError
-      );
-
-      setError(
-        loadError instanceof Error
-          ? loadError.message
-          : "Failed to load complaint details."
-      );
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }
-
-
-  /*
-   * ==========================================================
-   * INITIAL LOAD
-   * ==========================================================
-   */
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    [complaintId]
+  );
 
   useEffect(() => {
     loadDetails();
-  }, [complaintId]);
-
+  }, [loadDetails]);
 
   /*
-   * ==========================================================
-   * LOADING
-   * ==========================================================
+   * Run the AI triage pass when arriving straight from submission.
+   *
+   * The previous implementation imported processComplaintWithAI and
+   * read ?process=ai but never actually called it, so newly created
+   * reports were left with ai_analysis_status unset. This wires the
+   * existing pipeline up and reflects it in the UI.
    */
+  useEffect(() => {
+    if (!shouldProcessAI || !complaintId || aiTriggered.current) return;
+    if (!details) return;
 
+    // Only triage a report that has not been through it yet.
+    if (details.complaint.status !== "submitted") return;
+
+    aiTriggered.current = true;
+
+    let cancelled = false;
+
+    (async () => {
+      setIsAnalyzing(true);
+
+      try {
+        await processComplaintWithAI(complaintId);
+        if (!cancelled) await loadDetails(false);
+      } catch (aiError) {
+        // Triage is best-effort; the report itself is already saved.
+        console.error("AI analysis failed:", aiError);
+      } finally {
+        if (!cancelled) {
+          setIsAnalyzing(false);
+          // Drop the query param so a refresh does not re-trigger.
+          router.replace(`/citizen/complaints/${complaintId}`, { scroll: false });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [shouldProcessAI, complaintId, details, loadDetails, router]);
+
+  /* ---------------- Loading ---------------- */
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-4xl">
-        <div className="flex min-h-[60vh] items-center justify-center">
-          <div className="flex flex-col items-center gap-3 text-center">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-
-            <p className="text-sm text-muted-foreground">
-              Loading complaint details...
-            </p>
+      <div>
+        <PageHeaderSkeleton withAction={false} />
+        <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
+          <div className="space-y-6">
+            <Skeleton className="h-40 rounded-lg" />
+            <Skeleton className="h-56 rounded-lg" />
+          </div>
+          <div className="rounded-lg border bg-card p-5">
+            <TimelineSkeleton steps={4} />
           </div>
         </div>
       </div>
     );
   }
 
-
-  /*
-   * ==========================================================
-   * ERROR
-   * ==========================================================
-   */
-
+  /* ---------------- Error ---------------- */
   if (error || !details) {
     return (
-      <div className="mx-auto max-w-2xl py-12">
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-              <FileText className="h-6 w-6 text-destructive" />
-            </div>
-
-            <h2 className="text-lg font-semibold">
-              Unable to load complaint
-            </h2>
-
-            <p className="mt-2 max-w-md text-sm text-muted-foreground">
-              {error ??
-                "The requested complaint could not be found."}
-            </p>
-
-            <div className="mt-6 flex gap-3">
-              <Button
-                variant="outline"
-                onClick={() =>
-                  router.back()
-                }
-              >
-                Go Back
-              </Button>
-
-              <Button
-                onClick={() =>
-                  loadDetails()
-                }
-              >
-                Try Again
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="mx-auto max-w-xl py-8">
+        <ErrorState
+          variant="panel"
+          title="We couldn't open this report"
+          description={error ?? "The report could not be found."}
+          onRetry={() => loadDetails()}
+        />
+        <div className="mt-4 text-center">
+          <Button variant="ghost" onClick={() => router.push("/citizen/complaints")}>
+            Back to my issues
+          </Button>
+        </div>
       </div>
     );
   }
 
-
-  /*
-   * ==========================================================
-   * DATA
-   * ==========================================================
-   */
-
-  const {
-    complaint,
-    media,
-  } = details;
-
-  const currentStatus =
-    complaint.status;
-
-  const currentStatusIndex =
-    statusOrder.indexOf(
-      currentStatus
-    );
-
-  const formattedDate =
-    new Date(
-      complaint.created_at
-    ).toLocaleString(
-      "en-IN",
-      {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }
-    );
-
-
-  /*
-   * ==========================================================
-   * RENDER
-   * ==========================================================
-   */
+  const { complaint, media } = details;
+  const statusMeta = getStatusMeta(complaint.status);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
-
-      {/* ======================================================
-          HEADER
-      ======================================================= */}
-
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <Link
-            href="/citizen/complaints"
-            className="mb-3 inline-flex items-center text-sm text-muted-foreground transition-colors hover:text-foreground"
+    <div>
+      <PageHeader
+        breadcrumbs={[
+          { label: "My Issues", href: "/citizen/complaints" },
+          { label: complaint.complaint_number || "Report" },
+        ]}
+        eyebrow={
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-sm font-medium text-muted-foreground">
+              {complaint.complaint_number}
+            </span>
+            <CopyButton value={complaint.complaint_number} label="Tracking ID" />
+          </div>
+        }
+        title={complaint.title}
+        action={
+          <Button
+            variant="outline"
+            onClick={() => loadDetails(false)}
+            disabled={isRefreshing}
           >
-            <ArrowLeft className="mr-2 h-4 w-4" />
+            {isRefreshing ? (
+              <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <RefreshCw className="mr-1 h-4 w-4" aria-hidden="true" />
+            )}
+            Refresh
+          </Button>
+        }
+      />
 
-            My Complaints
-          </Link>
+      {/*
+        Current status banner — the single most important thing on the
+        page, so it sits above the fold and never requires hunting.
+      */}
+      <div className="mb-6 rounded-lg border bg-card p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Current status
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <StatusBadge status={complaint.status} showIcon />
+              {complaint.priority_level && (
+                <PriorityBadge
+                  level={complaint.priority_level}
+                  score={complaint.priority_score ?? undefined}
+                />
+              )}
+            </div>
+            <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
+              {statusMeta.description}
+            </p>
+          </div>
 
-          <h1 className="text-2xl font-bold tracking-tight">
-            Complaint Details
-          </h1>
-
-          <p className="mt-1 text-sm text-muted-foreground">
-            Track the progress of your civic complaint.
-          </p>
-        </div>
-
-        <Button
-          variant="outline"
-          onClick={() =>
-            loadDetails(false)
-          }
-          disabled={
-            isRefreshing
-          }
-        >
-          {isRefreshing ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCw className="mr-2 h-4 w-4" />
+          {isAnalyzing && (
+            <div className="flex shrink-0 items-center gap-2.5 rounded-lg border border-primary/20 bg-primary/5 px-3.5 py-2.5">
+              <Loader2
+                className="h-4 w-4 animate-spin text-primary"
+                aria-hidden="true"
+              />
+              <span className="text-sm font-medium text-primary">
+                Triaging your report…
+              </span>
+            </div>
           )}
-
-          Refresh
-        </Button>
+        </div>
       </div>
 
-
-      {/* ======================================================
-          COMPLAINT SUMMARY
-      ======================================================= */}
-
-      <Card>
-        <CardHeader>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Complaint Number
-              </p>
-
-              <CardTitle className="mt-1 font-mono text-lg">
-                {complaint.complaint_number}
-              </CardTitle>
-            </div>
-
-            <StatusBadge
-              status={
-                complaint.status
-              }
-            />
-          </div>
-        </CardHeader>
-
-        <CardContent className="space-y-5">
-          <div>
-            <h2 className="text-xl font-semibold">
-              {complaint.title}
+      <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
+        {/* ================= LEFT ================= */}
+        <div className="space-y-6">
+          {/* ---- Description ---- */}
+          <section
+            aria-labelledby="description-heading"
+            className="rounded-lg border bg-card p-5"
+          >
+            <h2
+              id="description-heading"
+              className="text-sm font-semibold text-foreground"
+            >
+              What was reported
             </h2>
 
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+            <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
               {complaint.description}
             </p>
-          </div>
 
-          <Separator />
+            <Separator className="my-5" />
 
-          <div className="grid gap-4 sm:grid-cols-3">
-
-            {/* CATEGORY */}
-
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Category
-              </p>
-
-              <p className="mt-1 text-sm font-medium capitalize">
-                {complaint.category.replace(
-                  /_/g,
-                  " "
-                )}
-              </p>
-            </div>
-
-            {/* PRIORITY */}
-
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Priority
-              </p>
-
-              <div className="mt-1">
-                {complaint.priority_level ? (
-                  <PriorityBadge
-                    level={
-                      complaint.priority_level
-                    }
-                  />
-                ) : (
+            <dl className="grid gap-5 sm:grid-cols-3">
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Category
+                </dt>
+                <dd className="mt-1.5">
                   <Badge variant="outline">
-                    Pending AI Analysis
+                    {formatCategory(complaint.category)}
                   </Badge>
-                )}
+                </dd>
               </div>
-            </div>
-
-            {/* CREATED */}
-
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Submitted
-              </p>
-
-              <p className="mt-1 text-sm font-medium">
-                {formattedDate}
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-
-      {/* ======================================================
-          EVIDENCE
-      ======================================================= */}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <FileText className="h-5 w-5 text-primary" />
-
-            Evidence
-          </CardTitle>
-        </CardHeader>
-
-        <CardContent>
-
-          {media.length === 0 ? (
-            <div className="rounded-xl border border-dashed py-10 text-center">
-              <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
-
-              <p className="mt-3 text-sm font-medium">
-                No evidence uploaded
-              </p>
-
-              <p className="mt-1 text-xs text-muted-foreground">
-                No photos or evidence are attached to this complaint.
-              </p>
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-
-              {media.map(
-                (item) => (
-                  <a
-                    key={item.id}
-                    href={
-                      item.signedUrl
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="group overflow-hidden rounded-xl border bg-muted/20"
-                  >
-                    <div className="aspect-video overflow-hidden bg-muted">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={
-                          item.signedUrl
-                        }
-                        alt={
-                          item.file_name
-                        }
-                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                      />
-                    </div>
-
-                    <div className="p-3">
-                      <p className="truncate text-sm font-medium">
-                        {item.file_name}
-                      </p>
-
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {item.file_size
-                          ? `${(
-                            item.file_size /
-                            1024 /
-                            1024
-                          ).toFixed(
-                            2
-                          )} MB`
-                          : item.file_type}
-                      </p>
-                    </div>
-                  </a>
-                )
-              )}
-
-            </div>
-          )}
-
-        </CardContent>
-      </Card>
-
-
-      {/* ======================================================
-          LOCATION
-      ======================================================= */}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <MapPin className="h-5 w-5 text-primary" />
-
-            Location
-          </CardTitle>
-        </CardHeader>
-
-        <CardContent>
-          <div className="grid gap-4 sm:grid-cols-[1fr_280px]">
-
-            {/* LOCATION INFORMATION */}
-
-            <div className="space-y-4">
 
               <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Address
-                </p>
-
-                <p className="mt-1 text-sm leading-6">
-                  {complaint.address ||
-                    "Location address unavailable"}
-                </p>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Reported
+                </dt>
+                <dd className="mt-1.5 text-sm font-medium text-foreground">
+                  <time dateTime={complaint.created_at}>
+                    {formatDateTime(complaint.created_at)}
+                  </time>
+                </dd>
               </div>
 
-              <Separator />
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Department
+                </dt>
+                <dd className="mt-1.5 flex items-center gap-1.5 text-sm font-medium text-foreground">
+                  {complaint.department_id ? (
+                    <>
+                      <Building2
+                        className="h-3.5 w-3.5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      {formatCategory(complaint.department_id)}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Not yet assigned</span>
+                  )}
+                </dd>
+              </div>
+            </dl>
 
-              <div className="grid grid-cols-2 gap-4">
-
+            {/* AI reasoning, when the pipeline has produced one. */}
+            {complaint.priority_reason && (
+              <div className="mt-5 flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3.5">
+                <Sparkles
+                  className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                  aria-hidden="true"
+                />
                 <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Latitude
+                  <p className="text-xs font-semibold text-foreground">
+                    Why this priority
                   </p>
-
-                  <p className="mt-1 font-mono text-sm">
-                    {complaint.latitude !==
-                      null
-                      ? complaint.latitude.toFixed(
-                        6
-                      )
-                      : "—"}
+                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                    {complaint.priority_reason}
                   </p>
                 </div>
-
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Longitude
-                  </p>
-
-                  <p className="mt-1 font-mono text-sm">
-                    {complaint.longitude !==
-                      null
-                      ? complaint.longitude.toFixed(
-                        6
-                      )
-                      : "—"}
-                  </p>
-                </div>
-
               </div>
+            )}
+          </section>
 
-            </div>
+          {/* ---- Evidence ---- */}
+          <section
+            aria-labelledby="evidence-heading"
+            className="rounded-lg border bg-card p-5"
+          >
+            <h2
+              id="evidence-heading"
+              className="text-sm font-semibold text-foreground"
+            >
+              Evidence
+              {media.length > 0 && (
+                <span className="ml-1.5 font-normal text-muted-foreground">
+                  ({media.length})
+                </span>
+              )}
+            </h2>
 
-
-            {/* MAP PLACEHOLDER */}
-
-            <div className="flex min-h-[180px] items-center justify-center rounded-xl border bg-muted/30">
-              <div className="text-center">
-                <MapPin className="mx-auto h-8 w-8 text-primary" />
-
-                <p className="mt-2 text-sm font-medium">
-                  Complaint Location
+            {media.length === 0 ? (
+              <div className="mt-4 flex flex-col items-center rounded-lg border border-dashed py-8 text-center">
+                <ImageOff
+                  className="h-6 w-6 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <p className="mt-2.5 text-sm font-medium text-foreground">
+                  No photos attached
                 </p>
-
-                <p className="mt-1 text-xs text-muted-foreground">
-                  GPS coordinates captured
+                <p className="mt-1 max-w-xs text-xs text-muted-foreground">
+                  This report was submitted without evidence.
                 </p>
               </div>
-            </div>
-
-          </div>
-        </CardContent>
-      </Card>
-
-
-      {/* ======================================================
-          STATUS TIMELINE
-      ======================================================= */}
-
-     {/* ============================================================
-    COMPLAINT TIMELINE
-============================================================ */}
-
-<Card>
-  <CardHeader>
-    <CardTitle className="flex items-center gap-2">
-      <Clock3 className="h-5 w-5 text-primary" />
-      Complaint Timeline
-    </CardTitle>
-  </CardHeader>
-
-  <CardContent>
-    {(() => {
-      /**
-       * --------------------------------------------------------
-       * CURRENT COMPLAINT STATUS
-       * --------------------------------------------------------
-       *
-       * We intentionally use only the existing complaint
-       * status here.
-       *
-       * We do NOT access complaint.ai_analysis_status because
-       * that field is not part of the current Complaint type.
-       */
-
-      const complaintStatus =
-        complaint?.status ?? "submitted";
-
-      /**
-       * --------------------------------------------------------
-       * TIMELINE PROGRESS
-       * --------------------------------------------------------
-       *
-       * 0 → Complaint Submitted
-       * 1 → AI Analysis
-       * 2 → Department Assignment
-       * 3 → Officer Action
-       * 4 → Resolution
-       *
-       * AI analysis is considered part of the workflow after
-       * submission. Once the complaint reaches an operational
-       * status, the timeline advances automatically.
-       */
-
-      let currentStep = 1;
-
-      switch (complaintStatus) {
-        case "submitted":
-          currentStep = 1;
-          break;
-
-        case "ai_analyzed":
-          currentStep = 2;
-          break;
-
-        case "assigned":
-          currentStep = 2;
-          break;
-
-        case "accepted":
-          currentStep = 3;
-          break;
-
-        case "in_progress":
-          currentStep = 3;
-          break;
-
-        case "citizen_confirmation":
-          currentStep = 3;
-          break;
-
-        case "resolved":
-          currentStep = 4;
-          break;
-
-        default:
-          currentStep = 1;
-      }
-
-      /**
-       * --------------------------------------------------------
-       * TIMELINE STEPS
-       * --------------------------------------------------------
-       */
-
-      const timelineSteps = [
-        {
-          title: "Complaint Submitted",
-          description:
-            "Your complaint has been successfully registered.",
-          icon: CheckCircle2,
-        },
-
-        {
-          title: "AI Analysis",
-          description:
-            complaintStatus === "submitted"
-              ? "The complaint is being analyzed and prioritized automatically."
-              : "The complaint has been analyzed and prioritized automatically.",
-          icon: Sparkles,
-        },
-
-        {
-          title: "Department Assignment",
-          description:
-            complaintStatus === "assigned" ||
-            complaintStatus === "accepted" ||
-            complaintStatus === "in_progress" ||
-            complaintStatus === "citizen_confirmation" ||
-            complaintStatus === "resolved"
-              ? "The complaint has been routed to the appropriate department."
-              : "The complaint will be routed to the appropriate department.",
-          icon: UserCheck,
-        },
-
-        {
-          title: "Officer Action",
-          description:
-            complaintStatus === "accepted" ||
-            complaintStatus === "in_progress" ||
-            complaintStatus === "citizen_confirmation" ||
-            complaintStatus === "resolved"
-              ? "A responsible officer is working on the issue."
-              : "A responsible officer will work on the issue.",
-          icon: Clock3,
-        },
-
-        {
-          title: "Resolution",
-          description:
-            complaintStatus === "resolved"
-              ? "The issue has been marked as resolved."
-              : "The issue will be marked resolved after completion.",
-          icon: CheckCircle2,
-        },
-      ];
-
-      return (
-        <div className="space-y-0">
-          {timelineSteps.map((step, index) => {
-            const Icon = step.icon;
-
-            const isCompleted =
-              index < currentStep;
-
-            const isCurrent =
-              index === currentStep;
-
-            const isPending =
-              index > currentStep;
-
-            return (
-              <div
-                key={step.title}
-                className="relative flex gap-4"
-              >
-                {/* Vertical connector */}
-                {index <
-                  timelineSteps.length - 1 && (
-                  <div
-                    className={`absolute left-[21px] top-11 h-[calc(100%-20px)] w-px ${
-                      index < currentStep
-                        ? "bg-primary"
-                        : "bg-border"
-                    }`}
-                  />
-                )}
-
-                {/* Step icon */}
-                <div
-                  className={`
-                    relative z-10
-                    flex h-11 w-11 shrink-0
-                    items-center justify-center
-                    rounded-full border
-                    transition-all
-                    ${
-                      isCompleted
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : isCurrent
-                        ? "border-primary bg-primary text-primary-foreground ring-4 ring-primary/10"
-                        : "border-border bg-muted text-muted-foreground"
-                    }
-                  `}
-                >
-                  <Icon className="h-5 w-5" />
-                </div>
-
-                {/* Step content */}
-                <div className="pb-8 pt-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h4
-                      className={`
-                        font-semibold
-                        ${
-                          isPending
-                            ? "text-muted-foreground"
-                            : "text-foreground"
-                        }
-                      `}
+            ) : (
+              <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+                {media.map((item) => (
+                  <li key={item.id}>
+                    <a
+                      href={item.signedUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group block overflow-hidden rounded-lg border bg-muted/20 transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     >
-                      {step.title}
-                    </h4>
+                      <div className="aspect-video overflow-hidden bg-neutral-900">
+                        {/* Signed Supabase Storage URLs are short-lived and
+                            not a configured next/image remote host. */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={item.signedUrl}
+                          alt={`Evidence photo submitted with this report: ${item.file_name}`}
+                          loading="lazy"
+                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                        />
+                      </div>
+                      <div className="p-3">
+                        <p className="truncate text-xs font-medium text-foreground">
+                          {item.file_name}
+                        </p>
+                        <p className="tabular mt-0.5 text-xs text-muted-foreground">
+                          {item.file_size
+                            ? `${(item.file_size / 1024 / 1024).toFixed(2)} MB`
+                            : item.file_type}
+                        </p>
+                      </div>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-                    {isCurrent && (
-                      <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
-                        Current
-                      </span>
-                    )}
+          {/* ---- Location ---- */}
+          <section
+            aria-labelledby="location-heading"
+            className="overflow-hidden rounded-lg border bg-card"
+          >
+            <div className="p-5 pb-4">
+              <h2
+                id="location-heading"
+                className="text-sm font-semibold text-foreground"
+              >
+                Location
+              </h2>
+              <p className="mt-2 flex items-start gap-2 text-sm leading-relaxed text-muted-foreground">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                {complaint.address || "No address recorded"}
+              </p>
+              {complaint.latitude !== null && complaint.longitude !== null && (
+                <p className="tabular mt-1.5 pl-6 text-xs text-muted-foreground">
+                  {complaint.latitude.toFixed(6)}, {complaint.longitude.toFixed(6)}
+                </p>
+              )}
+            </div>
 
-                    {isCompleted && (
-                      <span className="rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                        Completed
-                      </span>
-                    )}
-                  </div>
-
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {step.description}
-                  </p>
-                </div>
+            {complaint.latitude !== null && complaint.longitude !== null && (
+              <div className="h-56 border-t">
+                <StaticLocationMap
+                  latitude={complaint.latitude}
+                  longitude={complaint.longitude}
+                  status={complaint.status}
+                />
               </div>
-            );
-          })}
+            )}
+          </section>
         </div>
-      );
-    })()}
-  </CardContent>
-</Card>
 
-      {/* ======================================================
-          AI / SECURITY INFORMATION
-      ======================================================= */}
+        {/* ================= RIGHT ================= */}
+        <div className="space-y-6">
+          <section
+            aria-labelledby="timeline-heading"
+            className="rounded-lg border bg-card p-5 lg:sticky lg:top-24"
+          >
+            <h2
+              id="timeline-heading"
+              className="flex items-center gap-2 text-sm font-semibold text-foreground"
+            >
+              <Clock3 className="h-4 w-4 text-primary" aria-hidden="true" />
+              Progress
+            </h2>
 
-      <Card className="border-primary/20 bg-primary/5">
-        <CardContent className="flex items-start gap-4 pt-6">
+            <div className="mt-5">
+              <IssueTimeline
+                status={complaint.status}
+                createdAt={complaint.created_at}
+                updatedAt={complaint.updated_at}
+              />
+            </div>
 
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <ShieldCheck className="h-5 w-5" />
-          </div>
-
-          <div>
-            <h3 className="font-semibold">
-              Complaint securely recorded
-            </h3>
-
-            <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              Your complaint and evidence are stored
-              securely. AI-based categorization and
-              priority analysis will be applied as the
-              complaint moves through the workflow.
-            </p>
-          </div>
-
-        </CardContent>
-      </Card>
-
+            <div className="mt-5 flex items-start gap-2.5 border-t pt-4">
+              <FileText
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                You&apos;ll be notified as this report moves between stages.
+                Nothing is marked resolved without photographic proof and a
+                supervisor check.
+              </p>
+            </div>
+          </section>
+        </div>
+      </div>
     </div>
   );
 }
