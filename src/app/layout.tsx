@@ -30,6 +30,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/*
+         * Scroll-reveal animations render their hidden state on the
+         * server. Without JavaScript the reveal never fires, so force
+         * that content visible rather than leaving the page blank.
+         */}
+        <noscript>
+          <style>{`[data-reveal]{opacity:1 !important;transform:none !important;}`}</style>
+        </noscript>
+      </head>
       <body className="min-h-full flex flex-col">
         {children}
         <Toaster />
