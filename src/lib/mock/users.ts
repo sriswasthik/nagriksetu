@@ -15,7 +15,7 @@ export const mockCurrentUser: User = {
 export const mockOfficerUser: User = {
   id: 'usr_officer_1',
   name: 'Priya Patel',
-  email: 'priya.p@nagriksetu.gov.in',
+  email: 'priya.p@citytrace.gov.in',
   mobile: '+91 9876543211',
   role: 'officer',
   department: 'dept-water',
@@ -28,7 +28,7 @@ export const mockOfficerUser: User = {
 export const mockSupervisorUser: User = {
   id: 'usr_sup_1',
   name: 'Vikram Singh',
-  email: 'vikram.s@nagriksetu.gov.in',
+  email: 'vikram.s@citytrace.gov.in',
   mobile: '+91 9876543212',
   role: 'supervisor',
   department: 'dept-water',
@@ -40,7 +40,7 @@ export const mockSupervisorUser: User = {
 export const mockAdminUser: User = {
   id: 'usr_admin_1',
   name: 'Admin User',
-  email: 'admin@nagriksetu.gov.in',
+  email: 'admin@citytrace.gov.in',
   mobile: '+91 9999999999',
   role: 'admin',
   isVerified: true,

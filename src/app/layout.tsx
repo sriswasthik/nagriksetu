@@ -4,14 +4,26 @@ import "./globals.css";
 import { APP_NAME, APP_DESCRIPTION, APP_TAGLINE } from "@/lib/constants";
 import { Toaster } from "@/components/ui/sonner";
 
+/*
+ * Inter carries the UI. The explicit weight range comes from main and
+ * is worth keeping — the design system uses 500/600/700 for labels,
+ * headings and metrics, and without it those weights get synthesised.
+ */
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],
+  display: "swap",
+  weight: ["300", "400", "500", "600", "700", "800"],
 });
 
+/*
+ * Monospace is not decorative here: tracking IDs, complaint numbers
+ * and coordinates are rendered in it so digits align column-wise.
+ */
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -22,6 +34,14 @@ export const metadata: Metadata = {
   },
   description: APP_DESCRIPTION,
   applicationName: APP_NAME,
+  keywords: [
+    "civic",
+    "complaints",
+    "government",
+    "Smart India Hackathon",
+    APP_NAME,
+  ],
+  authors: [{ name: `${APP_NAME} Team` }],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -40,7 +60,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <style>{`[data-reveal]{opacity:1 !important;transform:none !important;}`}</style>
         </noscript>
       </head>
-      <body className="min-h-full flex flex-col">
+      <body className="min-h-full flex flex-col bg-background text-foreground">
         {children}
         <Toaster />
       </body>

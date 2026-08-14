@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { formatDateTime } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
+import { authService } from "@/lib/services/auth";
 import type { WorkOrder } from "@/types/workOrder";
 
 const RESOLUTION_NOTES_MIN = 5;
@@ -45,12 +46,26 @@ export default function WorkOrderDetailView() {
   const [proofFile, setProofFile] = useState<File | null>(null);
   const [proofPreview, setProofPreview] = useState<string | null>(null);
 
+  /*
+   * Who is making the update. Carried over from main, which resolves
+   * this from the session rather than hardcoding a placeholder — the
+   * value lands in the work order's audit trail, so a stub would make
+   * that trail wrong.
+   */
+  const [officerId, setOfficerId] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const data = await workOrderService.getWorkOrderById(id);
+      const [data, user] = await Promise.all([
+        workOrderService.getWorkOrderById(id),
+        // Never let a failed profile lookup block the work order itself.
+        authService.getCurrentUser().catch(() => null),
+      ]);
+
+      if (user?.id) setOfficerId(user.id);
 
       if (!data) {
         setError("That work order could not be found.");
@@ -114,7 +129,8 @@ export default function WorkOrderDetailView() {
         status: newStatus,
         notes: notes.length > 0 ? notes : undefined,
         media,
-        updatedBy: "officer_1",
+        // Falls back only if the session could not be resolved.
+        updatedBy: officerId ?? "unknown-officer",
         timestamp: new Date().toISOString(),
       });
 

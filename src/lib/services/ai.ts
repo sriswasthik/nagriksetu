@@ -1,9 +1,7 @@
 /**
  * ============================================================
- * NAGRIKSETU — AI COMPLAINT ANALYSIS SERVICE
+ * CITYTRACE — AI COMPLAINT ANALYSIS SERVICE
  * ============================================================
- *
- * Step 3G-A
  *
  * MOCK AI ENGINE
  *
@@ -13,19 +11,14 @@
  * - Calculate priority
  * - Detect department
  * - Generate summary/reasoning
- * - Store AI analysis
- * - Safely map AI categories to database categories
- *
- * The AI layer and database category enum intentionally have
- * different vocabularies.
+ * - Persist AI analysis
+ * - Persist normalized complaint category/priority
+ * - Safely resolve department
  * ============================================================
  */
 
 import { createClient } from "@/lib/supabase/client";
-
-import {
-  getComplaintById,
-} from "@/lib/services/complaints";
+import { getComplaintById } from "@/lib/services/complaints";
 
 import type {
   AIAnalysisRequest,
@@ -37,34 +30,15 @@ import type {
   AISeverity,
 } from "@/types/ai";
 
-/**
- * ============================================================
- * MOCK AI MODEL
- * ============================================================
- */
+/* ============================================================
+ * CONSTANTS
+ * ========================================================== */
 
-const AI_MODEL_NAME = "nagriksetu-mock-ai-v1";
+const AI_MODEL_NAME = "citytrace-mock-ai-v2";
 
-/**
- * ============================================================
- * DATABASE CATEGORY TYPE
- * ============================================================
- *
- * IMPORTANT:
- *
- * Supabase complaint_category currently accepts only:
- *
- * - garbage
- * - water_leakage
- * - pothole
- * - drainage
- * - streetlight
- * - other
- *
- * Do NOT directly save AIComplaintCategory into
- * complaints.category.
- * ============================================================
- */
+/* ============================================================
+ * DATABASE TYPES
+ * ========================================================== */
 
 type DatabaseComplaintCategory =
   | "garbage"
@@ -74,17 +48,25 @@ type DatabaseComplaintCategory =
   | "streetlight"
   | "other";
 
-/**
- * ============================================================
- * CATEGORY RULES
- * ============================================================
- */
+type DatabaseComplaintPriority =
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
+
+/* ============================================================
+ * CATEGORY RULE
+ * ========================================================== */
 
 type CategoryRule = {
   category: AIComplaintCategory;
   department: AIDepartment;
   keywords: string[];
 };
+
+/* ============================================================
+ * CATEGORY RULES
+ * ========================================================== */
 
 const CATEGORY_RULES: CategoryRule[] = [
   {
@@ -96,14 +78,20 @@ const CATEGORY_RULES: CategoryRule[] = [
       "road",
       "roads",
       "road damage",
-      "broken road",
+      "road damaged",
       "damaged road",
-      "crater",
+      "broken road",
+      "bad road",
+      "poor road",
       "road crack",
       "road cracks",
-      "footpath",
+      "cracked road",
+      "crater",
       "pavement",
+      "footpath",
+      "sidewalk",
       "street damage",
+      "road surface",
     ],
   },
 
@@ -122,7 +110,10 @@ const CATEGORY_RULES: CategoryRule[] = [
       "waste collection",
       "garbage collection",
       "dustbin",
+      "dust bin",
       "bin overflow",
+      "overflowing bin",
+      "garbage pile",
     ],
   },
 
@@ -137,8 +128,12 @@ const CATEGORY_RULES: CategoryRule[] = [
       "lamp",
       "light pole",
       "dark street",
+      "dark road",
       "light not working",
       "street light not working",
+      "streetlight not working",
+      "broken streetlight",
+      "broken street light",
     ],
   },
 
@@ -150,6 +145,9 @@ const CATEGORY_RULES: CategoryRule[] = [
       "water supply",
       "water leakage",
       "water leak",
+      "water leaking",
+      "leaking pipe",
+      "leaking pipeline",
       "no water",
       "drinking water",
       "tap",
@@ -157,6 +155,7 @@ const CATEGORY_RULES: CategoryRule[] = [
       "water pipe",
       "water shortage",
       "water problem",
+      "water connection",
     ],
   },
 
@@ -167,6 +166,7 @@ const CATEGORY_RULES: CategoryRule[] = [
       "drain",
       "drainage",
       "blocked drain",
+      "blocked drainage",
       "open drain",
       "sewer",
       "sewage",
@@ -176,6 +176,8 @@ const CATEGORY_RULES: CategoryRule[] = [
       "stagnant water",
       "waterlogging",
       "water logging",
+      "flooded drain",
+      "drain blockage",
     ],
   },
 
@@ -184,16 +186,18 @@ const CATEGORY_RULES: CategoryRule[] = [
     department: "traffic",
     keywords: [
       "traffic",
-      "signal",
       "traffic signal",
+      "signal",
       "traffic light",
       "signal not working",
       "congestion",
+      "traffic jam",
       "jam",
       "parking",
       "illegal parking",
       "road sign",
       "signboard",
+      "traffic sign",
     ],
   },
 
@@ -206,6 +210,7 @@ const CATEGORY_RULES: CategoryRule[] = [
       "dangerous",
       "accident",
       "accidents",
+      "injury",
       "hazard",
       "public safety",
       "broken railing",
@@ -214,6 +219,7 @@ const CATEGORY_RULES: CategoryRule[] = [
       "fallen tree",
       "electric wire",
       "exposed wire",
+      "live wire",
     ],
   },
 
@@ -247,31 +253,44 @@ const CATEGORY_RULES: CategoryRule[] = [
       "wire",
       "electric wire",
       "current",
+      "power failure",
     ],
   },
 ];
 
-/**
- * ============================================================
- * NORMALIZE TEXT
- * ============================================================
- */
+/* ============================================================
+ * TEXT NORMALIZATION
+ * ========================================================== */
 
-function normalizeText(
-  value: string | null | undefined
-): string {
-  return (value ?? "")
+function normalizeText(value: unknown): string {
+  return String(value ?? "")
     .toLowerCase()
+    .replace(/[-_/]/g, " ")
     .replace(/[^\w\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-/**
- * ============================================================
- * DETECT CATEGORY
- * ============================================================
- */
+/* ============================================================
+ * KEYWORD MATCHING
+ * ========================================================== */
+
+function keywordMatches(
+  text: string,
+  keyword: string
+): boolean {
+  const normalizedKeyword = normalizeText(keyword);
+
+  if (!normalizedKeyword) {
+    return false;
+  }
+
+  return text.includes(normalizedKeyword);
+}
+
+/* ============================================================
+ * CATEGORY DETECTION
+ * ========================================================== */
 
 function detectCategory(
   title: string,
@@ -282,37 +301,82 @@ function detectCategory(
   confidence: number;
   matchedKeywords: string[];
 } {
+  const titleText = normalizeText(title);
+  const descriptionText = normalizeText(description);
+
   const text = normalizeText(
-    `${title} ${description}`
+    `${titleText} ${descriptionText}`
   );
+
+  console.log("AI category detection input:", {
+    title,
+    description,
+    normalizedText: text,
+  });
 
   let bestMatch: CategoryRule | null = null;
   let bestScore = 0;
   let bestKeywords: string[] = [];
 
   for (const rule of CATEGORY_RULES) {
-    const matchedKeywords =
-      rule.keywords.filter((keyword) =>
-        text.includes(
-          normalizeText(keyword)
-        )
-      );
+    const matches = rule.keywords.filter((keyword) =>
+      keywordMatches(text, keyword)
+    );
 
-    if (matchedKeywords.length === 0) {
+    if (matches.length === 0) {
       continue;
     }
 
-    const score =
-      matchedKeywords.length;
+    /*
+     * Give multi-word matches more weight.
+     *
+     * Example:
+     * "large pothole on main road"
+     *
+     * pothole = 1
+     * road = 1
+     *
+     * Result => road_damage
+     */
+    const score = matches.reduce(
+      (total, keyword) => {
+        const words = normalizeText(keyword).split(" ");
+
+        return total + Math.max(1, words.length);
+      },
+      0
+    );
 
     if (score > bestScore) {
       bestScore = score;
       bestMatch = rule;
-      bestKeywords = matchedKeywords;
+      bestKeywords = matches;
     }
   }
 
+  /*
+   * Explicit pothole fallback.
+   *
+   * This makes the most important demo scenario
+   * completely deterministic.
+   */
+  if (
+    text.includes("pothole") ||
+    text.includes("potholes")
+  ) {
+    return {
+      category: "road_damage",
+      department: "roads_infrastructure",
+      confidence: 0.96,
+      matchedKeywords: ["pothole"],
+    };
+  }
+
   if (!bestMatch) {
+    console.warn(
+      "AI category detection: no category matched."
+    );
+
     return {
       category: "other",
       department: "other",
@@ -323,8 +387,15 @@ function detectCategory(
 
   const confidence = Math.min(
     0.96,
-    0.68 + bestScore * 0.08
+    0.70 + bestScore * 0.06
   );
+
+  console.log("AI category detected:", {
+    category: bestMatch.category,
+    department: bestMatch.department,
+    confidence,
+    matchedKeywords: bestKeywords,
+  });
 
   return {
     category: bestMatch.category,
@@ -334,11 +405,9 @@ function detectCategory(
   };
 }
 
-/**
- * ============================================================
- * DETECT SEVERITY
- * ============================================================
- */
+/* ============================================================
+ * SEVERITY DETECTION
+ * ========================================================== */
 
 function detectSeverity(
   title: string,
@@ -348,15 +417,10 @@ function detectSeverity(
     `${title} ${description}`
   );
 
-  /**
-   * CRITICAL
-   */
-
   const criticalKeywords = [
     "death",
     "dead",
     "life threatening",
-    "life-threatening",
     "electrocution",
     "fire",
     "major accident",
@@ -365,27 +429,22 @@ function detectSeverity(
     "open manhole",
     "exposed electric wire",
     "exposed wire",
+    "live wire",
   ];
 
   if (
-    criticalKeywords.some(
-      (keyword) =>
-        text.includes(
-          normalizeText(keyword)
-        )
+    criticalKeywords.some((keyword) =>
+      keywordMatches(text, keyword)
     )
   ) {
     return "critical";
   }
 
-  /**
-   * HIGH
-   */
-
   const highKeywords = [
     "dangerous",
     "danger",
     "accident",
+    "accidents",
     "injury",
     "unsafe",
     "heavy traffic",
@@ -393,28 +452,26 @@ function detectSeverity(
     "flood",
     "waterlogging",
     "large pothole",
+    "large potholes",
     "deep pothole",
+    "deep potholes",
     "major damage",
+    "severe damage",
+    "causes accidents",
   ];
 
   if (
-    highKeywords.some(
-      (keyword) =>
-        text.includes(
-          normalizeText(keyword)
-        )
+    highKeywords.some((keyword) =>
+      keywordMatches(text, keyword)
     )
   ) {
     return "high";
   }
 
-  /**
-   * MEDIUM
-   */
-
   const mediumKeywords = [
     "broken",
     "damaged",
+    "damage",
     "leak",
     "leaking",
     "blocked",
@@ -422,14 +479,13 @@ function detectSeverity(
     "not working",
     "problem",
     "issue",
+    "crack",
+    "cracked",
   ];
 
   if (
-    mediumKeywords.some(
-      (keyword) =>
-        text.includes(
-          normalizeText(keyword)
-        )
+    mediumKeywords.some((keyword) =>
+      keywordMatches(text, keyword)
     )
   ) {
     return "medium";
@@ -438,11 +494,9 @@ function detectSeverity(
   return "low";
 }
 
-/**
- * ============================================================
+/* ============================================================
  * SEVERITY → AI PRIORITY
- * ============================================================
- */
+ * ========================================================== */
 
 function severityToPriority(
   severity: AISeverity
@@ -463,19 +517,9 @@ function severityToPriority(
   }
 }
 
-/**
- * ============================================================
- * AI PRIORITY → DATABASE PRIORITY LEVEL
- * ============================================================
- *
- * Database enum:
- *
- * low
- * medium
- * high
- * critical
- * ============================================================
- */
+/* ============================================================
+ * AI PRIORITY → DATABASE PRIORITY
+ * ========================================================== */
 
 function mapPriorityToLevel(
   priority: AIPriority
@@ -496,26 +540,9 @@ function mapPriorityToLevel(
   }
 }
 
-type DatabaseComplaintPriority =
-  | "low"
-  | "medium"
-  | "high"
-  | "critical";
-
-/**
- * ============================================================
+/* ============================================================
  * AI CATEGORY → DATABASE CATEGORY
- * ============================================================
- *
- * THIS IS THE IMPORTANT FIX.
- *
- * AI has a richer classification system than the current
- * complaints.category database enum.
- *
- * AI category remains stored in ai_category.
- * The mapped category is stored in category.
- * ============================================================
- */
+ * ========================================================== */
 
 function mapAIToDatabaseCategory(
   category: AIComplaintCategory
@@ -536,13 +563,9 @@ function mapAIToDatabaseCategory(
     case "streetlight":
       return "streetlight";
 
-    /**
-     * These AI categories are valid AI classifications,
-     * but are not currently represented in the database
-     * complaint_category enum.
-     *
-     * Keep the detailed AI classification in ai_category
-     * and use "other" for the current complaint category.
+    /*
+     * These AI categories don't currently have
+     * dedicated database category values.
      */
     case "traffic":
     case "public_safety":
@@ -554,11 +577,44 @@ function mapAIToDatabaseCategory(
   }
 }
 
-/**
- * ============================================================
- * GENERATE SUMMARY
- * ============================================================
- */
+/* ============================================================
+ * AI DEPARTMENT → DATABASE CODE
+ * ========================================================== */
+
+function mapAIDepartmentToCode(
+  department: AIDepartment
+): string {
+  switch (department) {
+    case "roads_infrastructure":
+      return "ROADS";
+
+    case "sanitation":
+      return "SANITATION";
+
+    case "water_works":
+      return "WATER";
+
+    case "drainage":
+      return "DRAINAGE";
+
+    case "electrical":
+      return "ELECTRICAL";
+
+    case "traffic":
+      return "TRAFFIC";
+
+    case "public_safety":
+      return "SAFETY";
+
+    case "other":
+    default:
+      return "OTHER";
+  }
+}
+
+/* ============================================================
+ * SUMMARY
+ * ========================================================== */
 
 function generateSummary(
   category: AIComplaintCategory,
@@ -618,52 +674,32 @@ function generateSummary(
   );
 }
 
-/**
- * ============================================================
- * GENERATE REASONING
- * ============================================================
- */
+/* ============================================================
+ * REASONING
+ * ========================================================== */
 
 function generateReasoning(
   matchedKeywords: string[],
   severity: AISeverity
 ): string {
-  if (
-    matchedKeywords.length === 0
-  ) {
+  if (matchedKeywords.length === 0) {
     return (
       "No strong category keywords were detected. " +
       "The complaint has been classified as Other."
     );
   }
 
-  const keywordText =
-    matchedKeywords
-      .slice(0, 5)
-      .join(", ");
-
   return (
-    `Detected relevant keywords: ${keywordText}. ` +
-    `Severity indicators resulted in a ${severity} severity classification.`
+    `Detected relevant keywords: ` +
+    `${matchedKeywords.slice(0, 5).join(", ")}. ` +
+    `Severity indicators resulted in a ` +
+    `${severity} severity classification.`
   );
 }
 
-/**
- * ============================================================
+/* ============================================================
  * DUPLICATE DETECTION
- * ============================================================
- *
- * Step 3G-A:
- *
- * Basic placeholder implementation.
- *
- * Real implementation can later use:
- * - embeddings
- * - pgvector
- * - semantic similarity
- * - image similarity
- * ============================================================
- */
+ * ========================================================== */
 
 async function detectPossibleDuplicate(
   _request: AIAnalysisRequest
@@ -677,82 +713,63 @@ async function detectPossibleDuplicate(
   };
 }
 
-/**
- * ============================================================
- * RUN MOCK AI ANALYSIS
- * ============================================================
- */
+/* ============================================================
+ * ANALYZE COMPLAINT
+ * ========================================================== */
 
 export async function analyzeComplaint(
   request: AIAnalysisRequest
 ): Promise<AIAnalysisResponse> {
   try {
-    const {
-      category,
-      department,
-      confidence,
-      matchedKeywords,
-    } = detectCategory(
+    const detected = detectCategory(
       request.title,
       request.description
     );
 
-    const severity =
-      detectSeverity(
-        request.title,
-        request.description
-      );
+    const severity = detectSeverity(
+      request.title,
+      request.description
+    );
 
     const priority =
-      severityToPriority(
-        severity
-      );
+      severityToPriority(severity);
 
-    const summary =
-      generateSummary(
-        category,
-        severity,
-        department
-      );
+    const summary = generateSummary(
+      detected.category,
+      severity,
+      detected.department
+    );
 
-    const reasoning =
-      generateReasoning(
-        matchedKeywords,
-        severity
-      );
+    const reasoning = generateReasoning(
+      detected.matchedKeywords,
+      severity
+    );
 
     const duplicate =
-      await detectPossibleDuplicate(
-        request
-      );
+      await detectPossibleDuplicate(request);
 
     const result: AIAnalysisResult = {
-      category,
-
+      category: detected.category,
       severity,
-
       priority,
-
-      department,
-
-      confidence,
-
+      department: detected.department,
+      confidence: detected.confidence,
       summary,
-
       possibleDuplicate:
         duplicate.possibleDuplicate,
-
       duplicateComplaintId:
         duplicate.duplicateComplaintId,
-
       reasoning,
     };
 
+    console.log(
+      "FINAL AI RESULT:",
+      result
+    );
+
     return {
       success: true,
-
       status: "completed",
-
       result,
     };
   } catch (error) {
@@ -763,9 +780,7 @@ export async function analyzeComplaint(
 
     return {
       success: false,
-
       status: "failed",
-
       error:
         error instanceof Error
           ? error.message
@@ -774,18 +789,9 @@ export async function analyzeComplaint(
   }
 }
 
-/**
- * ============================================================
+/* ============================================================
  * PROCESS COMPLAINT WITH AI
- * ============================================================
- *
- * Accepts:
- *
- * 1. Complaint UUID
- * 2. Object containing id
- * 3. Object containing complaint_id
- * ============================================================
- */
+ * ========================================================== */
 
 export async function processComplaintWithAI(
   complaintInput:
@@ -795,85 +801,50 @@ export async function processComplaintWithAI(
         complaint_id?: string;
       }
 ): Promise<AIAnalysisResponse> {
-  /**
-   * ----------------------------------------------------------
-   * NORMALIZE COMPLAINT ID
-   * ----------------------------------------------------------
-   */
-
   let complaintId: string | undefined;
 
-  if (
-    typeof complaintInput ===
-    "string"
-  ) {
-    complaintId =
-      complaintInput;
+  if (typeof complaintInput === "string") {
+    complaintId = complaintInput;
   } else if (
     complaintInput &&
-    typeof complaintInput ===
-      "object"
+    typeof complaintInput === "object"
   ) {
     complaintId =
       complaintInput.id ??
       complaintInput.complaint_id;
   }
 
-  /**
-   * ----------------------------------------------------------
-   * VALIDATE COMPLAINT ID
-   * ----------------------------------------------------------
-   */
-
   if (!complaintId) {
-    console.error(
-      "AI processing failed: complaint ID was not provided.",
-      complaintInput
-    );
-
     return {
       success: false,
-
       status: "failed",
-
-      error:
-        "Complaint ID is missing.",
+      error: "Complaint ID is missing.",
     };
   }
 
-  if (
-    typeof complaintId !==
-    "string"
-  ) {
-    return {
-      success: false,
-
-      status: "failed",
-
-      error:
-        "Invalid complaint ID.",
-    };
-  }
-
-  console.log(
-    "AI processing complaint:",
-    complaintId
-  );
-
-  const supabase =
-    createClient();
+  const supabase = createClient();
 
   try {
-    /**
-     * --------------------------------------------------------
+    console.log(
+      "================================================"
+    );
+    console.log(
+      "STARTING AI COMPLAINT PROCESSING"
+    );
+    console.log(
+      "Complaint ID:",
+      complaintId
+    );
+    console.log(
+      "================================================"
+    );
+
+    /* --------------------------------------------------------
      * LOAD COMPLAINT
-     * --------------------------------------------------------
-     */
+     * ------------------------------------------------------ */
 
     const complaint =
-      await getComplaintById(
-        complaintId
-      );
+      await getComplaintById(complaintId);
 
     if (!complaint) {
       throw new Error(
@@ -881,52 +852,45 @@ export async function processComplaintWithAI(
       );
     }
 
-    /**
-     * --------------------------------------------------------
-     * MARK AI AS PROCESSING
-     * --------------------------------------------------------
-     */
+    console.log(
+      "Complaint loaded:",
+      {
+        id: complaint.id,
+        title: complaint.title,
+        description: complaint.description,
+        existingCategory: complaint.category,
+      }
+    );
+
+    /* --------------------------------------------------------
+     * MARK PROCESSING
+     * ------------------------------------------------------ */
 
     const {
-      error:
-        processingError,
+      error: processingError,
     } = await supabase
       .from("complaints")
       .update({
-        ai_analysis_status:
-          "processing",
-
-        ai_error_message:
-          null,
+        ai_analysis_status: "processing",
+        ai_error_message: null,
       })
-      .eq(
-        "id",
-        complaintId
-      );
+      .eq("id", complaintId);
 
     if (processingError) {
-      console.error(
-        "AI processing status update error:",
-        processingError.message
-      );
-
       throw processingError;
     }
 
-    /**
-     * --------------------------------------------------------
-     * BUILD AI REQUEST
-     * --------------------------------------------------------
-     */
+    /* --------------------------------------------------------
+     * BUILD REQUEST
+     * ------------------------------------------------------ */
 
     const request: AIAnalysisRequest = {
       complaintId,
 
-      title:
-        complaint.title,
+      title: complaint.title ?? "",
 
       description:
-        complaint.description,
+        complaint.description ?? "",
 
       category:
         complaint.category,
@@ -941,22 +905,12 @@ export async function processComplaintWithAI(
         complaint.longitude,
     };
 
-    /**
-     * --------------------------------------------------------
-     * RUN MOCK AI
-     * --------------------------------------------------------
-     */
+    /* --------------------------------------------------------
+     * RUN AI
+     * ------------------------------------------------------ */
 
     const response =
-      await analyzeComplaint(
-        request
-      );
-
-    /**
-     * --------------------------------------------------------
-     * HANDLE AI FAILURE
-     * --------------------------------------------------------
-     */
+      await analyzeComplaint(request);
 
     if (
       !response.success ||
@@ -965,81 +919,44 @@ export async function processComplaintWithAI(
       await supabase
         .from("complaints")
         .update({
-          ai_analysis_status:
-            "failed",
-
+          ai_analysis_status: "failed",
           ai_error_message:
             response.error ??
             "AI analysis failed.",
         })
-        .eq(
-          "id",
-          complaintId
-        );
+        .eq("id", complaintId);
 
       return response;
     }
 
-    const result =
-      response.result;
+    const result = response.result;
 
-    /**
-     * --------------------------------------------------------
-     * MAP AI CATEGORY TO DATABASE CATEGORY
-     * --------------------------------------------------------
-     *
-     * Example:
-     *
-     * AI:
-     *   road_damage
-     *
-     * Database:
-     *   pothole
-     *
-     * The original AI category is still stored in
-     * ai_category.
-     */
+    /* --------------------------------------------------------
+     * MAP CATEGORY + PRIORITY
+     * ------------------------------------------------------ */
 
     const databaseCategory =
       mapAIToDatabaseCategory(
         result.category
       );
 
-    /**
-     * --------------------------------------------------------
-     * MAP AI PRIORITY TO DATABASE PRIORITY
-     * --------------------------------------------------------
-     */
-
     const priorityLevel =
       mapPriorityToLevel(
         result.priority
       );
 
-    /**
-     * --------------------------------------------------------
-     * CALCULATE PRIORITY SCORE
-     * --------------------------------------------------------
-     *
-     * This gives the existing priority_score column
-     * a deterministic value.
-     *
-     * critical = 100
-     * high     = 75
-     * medium   = 50
-     * low      = 25
-     *
-     * Confidence slightly adjusts the score.
-     */
+    /* --------------------------------------------------------
+     * PRIORITY SCORE
+     * ------------------------------------------------------ */
 
     const basePriorityScore =
       result.priority === "P1"
         ? 100
         : result.priority === "P2"
-        ? 75
-        : result.priority === "P3"
-        ? 50
-        : 25;
+          ? 75
+          : result.priority === "P3"
+            ? 50
+            : 25;
 
     const priorityScore = Math.round(
       basePriorityScore *
@@ -1047,37 +964,111 @@ export async function processComplaintWithAI(
           result.confidence * 0.25)
     );
 
-    /**
-     * --------------------------------------------------------
-     * PRIORITY REASON
-     * --------------------------------------------------------
-     */
-
     const priorityReason =
       result.reasoning ??
       `AI classified this complaint as ${result.severity} severity with ${result.priority} priority.`;
 
-    /**
-     * --------------------------------------------------------
-     * SAVE AI RESULT
-     * --------------------------------------------------------
-     */
+    /* --------------------------------------------------------
+     * DEPARTMENT
+     * ------------------------------------------------------ */
+
+    const departmentCode =
+      mapAIDepartmentToCode(
+        result.department
+      );
+
+    let departmentId: string | null =
+      null;
 
     const {
-      error:
-        updateError,
+      data: departmentData,
+      error: departmentError,
+    } = await supabase
+      .from("departments")
+      .select("id, name, code")
+      .eq("code", departmentCode)
+      .maybeSingle();
+
+    if (departmentError) {
+      console.warn(
+        "Department lookup warning:",
+        departmentError.message
+      );
+    }
+
+    if (departmentData) {
+      departmentId =
+        departmentData.id;
+
+      console.log(
+        "Department resolved:",
+        departmentData
+      );
+    } else {
+      console.warn(
+        "Department not found. Continuing without department_id.",
+        {
+          aiDepartment:
+            result.department,
+          departmentCode,
+        }
+      );
+    }
+
+    /* --------------------------------------------------------
+     * LOG FINAL RESULT
+     * ------------------------------------------------------ */
+
+    console.log(
+      "================================================"
+    );
+    console.log(
+      "FINAL AI ANALYSIS"
+    );
+    console.log(
+      "Category:",
+      result.category
+    );
+    console.log(
+      "Database category:",
+      databaseCategory
+    );
+    console.log(
+      "Severity:",
+      result.severity
+    );
+    console.log(
+      "AI priority:",
+      result.priority
+    );
+    console.log(
+      "Database priority:",
+      priorityLevel
+    );
+    console.log(
+      "Confidence:",
+      result.confidence
+    );
+    console.log(
+      "Department:",
+      result.department
+    );
+    console.log(
+      "================================================"
+    );
+
+    /* --------------------------------------------------------
+     * SAVE EVERYTHING
+     * ------------------------------------------------------ */
+
+    const {
+      error: updateError,
     } = await supabase
       .from("complaints")
       .update({
-        /**
-         * ====================================================
-         * NORMAL COMPLAINT FIELDS
-         * ====================================================
-         *
-         * IMPORTANT:
-         * Use mapped database category here.
+        /*
+         * NORMALIZED COMPLAINT VALUES
          */
-
         category:
           databaseCategory,
 
@@ -1090,23 +1081,17 @@ export async function processComplaintWithAI(
         priority_reason:
           priorityReason,
 
-        /**
-         * ====================================================
-         * AI FIELDS
-         * ====================================================
+        /*
+         * DEPARTMENT
          */
+        department_id:
+          departmentId,
 
+        /*
+         * AI VALUES
+         */
         ai_analysis_status:
           "completed",
-
-        /**
-         * Preserve original AI category.
-         *
-         * Example:
-         * public_safety
-         *
-         * This column is TEXT in the current schema.
-         */
 
         ai_category:
           result.category,
@@ -1149,100 +1134,76 @@ export async function processComplaintWithAI(
         complaintId
       );
 
-    /**
-     * --------------------------------------------------------
-     * DATABASE UPDATE ERROR
-     * --------------------------------------------------------
-     */
-
     if (updateError) {
       console.error(
-        "AI result database update error:",
-        updateError.message
+        "FAILED TO SAVE AI RESULT:",
+        updateError
       );
-
-      /**
-       * Try to record the failure.
-       *
-       * Do not throw before attempting this.
-       */
-
-      await supabase
-        .from("complaints")
-        .update({
-          ai_analysis_status:
-            "failed",
-
-          ai_error_message:
-            updateError.message,
-        })
-        .eq(
-          "id",
-          complaintId
-        );
 
       throw updateError;
     }
 
-    /**
-     * --------------------------------------------------------
-     * SUCCESS LOG
-     * --------------------------------------------------------
-     */
+    /* --------------------------------------------------------
+     * VERIFY DATABASE UPDATE
+     * ------------------------------------------------------ */
+
+    const {
+      data: verification,
+      error: verificationError,
+    } = await supabase
+      .from("complaints")
+      .select(
+        `
+        category,
+        priority_level,
+        priority_score,
+        ai_analysis_status,
+        ai_category,
+        ai_severity,
+        ai_priority,
+        ai_department,
+        ai_confidence,
+        ai_summary
+        `
+      )
+      .eq("id", complaintId)
+      .maybeSingle();
+
+    if (verificationError) {
+      console.warn(
+        "AI verification warning:",
+        verificationError.message
+      );
+    } else {
+      console.log(
+        "DATABASE VERIFICATION:",
+        verification
+      );
+    }
 
     console.log(
-      "AI analysis completed successfully:",
-      {
-        complaintId,
-
-        aiCategory:
-          result.category,
-
-        databaseCategory,
-
-        severity:
-          result.severity,
-
-        aiPriority:
-          result.priority,
-
-        databasePriority:
-          priorityLevel,
-
-        department:
-          result.department,
-
-        confidence:
-          result.confidence,
-
-        priorityScore,
-      }
+      "AI analysis saved successfully:",
+      complaintId
     );
-
-    /**
-     * --------------------------------------------------------
-     * RETURN SUCCESS
-     * --------------------------------------------------------
-     */
 
     return {
       success: true,
-
       status: "completed",
-
       result,
     };
   } catch (error) {
     console.error(
-      "Process complaint with AI error:",
+      "================================================"
+    );
+    console.error(
+      "AI PROCESSING FAILED"
+    );
+    console.error(
       error
     );
-
-    /**
-     * --------------------------------------------------------
-     * SAVE FAILURE STATE
-     * --------------------------------------------------------
-     */
+    console.error(
+      "================================================"
+    );
 
     try {
       await supabase
@@ -1260,9 +1221,7 @@ export async function processComplaintWithAI(
           "id",
           complaintId
         );
-    } catch (
-      secondaryError
-    ) {
+    } catch (secondaryError) {
       console.error(
         "Could not save AI failure state:",
         secondaryError
@@ -1271,9 +1230,7 @@ export async function processComplaintWithAI(
 
     return {
       success: false,
-
       status: "failed",
-
       error:
         error instanceof Error
           ? error.message
@@ -1282,11 +1239,9 @@ export async function processComplaintWithAI(
   }
 }
 
-/**
- * ============================================================
+/* ============================================================
  * GET AI ANALYSIS
- * ============================================================
- */
+ * ========================================================== */
 
 export async function getComplaintAIAnalysis(
   complaintId: string

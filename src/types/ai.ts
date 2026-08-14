@@ -1,6 +1,6 @@
 /**
  * ============================================================
- * NAGRIKSETU — AI TYPES
+ * CITYTRACE — AI TYPES
  * ============================================================
  *
  * Central type definitions for the AI complaint-analysis
