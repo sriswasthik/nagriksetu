@@ -77,9 +77,6 @@ export default function OfficerDashboard() {
   }
 
   const active = workOrders.filter((wo) => ACTIVE_STATUSES.includes(wo.status));
-  const urgent = active.filter(
-    (wo) => wo.priorityLevel === "critical" || wo.priorityLevel === "high"
-  );
   const breaching = active.filter((wo) => wo.slaHoursRemaining <= 6);
   const completedToday = workOrders.filter(
     (wo) =>
@@ -179,6 +176,7 @@ export default function OfficerDashboard() {
           <EmptyState
             icon={CheckCircle2}
             title="Nothing outstanding"
+            headingLevel="h3"
             description="You have no active work orders right now. New assignments will appear here as they are routed to you."
           />
         ) : (

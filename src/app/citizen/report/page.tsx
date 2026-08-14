@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -75,8 +74,6 @@ interface FormState {
 }
 
 export default function ReportIssuePage() {
-  const router = useRouter();
-
   const [step, setStep] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);

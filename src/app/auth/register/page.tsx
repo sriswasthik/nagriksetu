@@ -114,7 +114,7 @@ export default function RegisterPage() {
        */
       if (message.toLowerCase().includes("already registered")) {
         setError(
-          "An account with this email already exists. Try signing in instead."
+          "An account with this email already exists. Try signing in instead.",
         );
       } else if (message.toLowerCase().includes("password")) {
         setError("That password doesn't meet the security requirements.");
@@ -186,12 +186,12 @@ export default function RegisterPage() {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Full name</FormLabel>
-                <FormControl>
-                  <div className="relative">
-                    <User
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                      aria-hidden="true"
-                    />
+                <div className="relative">
+                  <User
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <FormControl>
                     <Input
                       placeholder="Enter your full name"
                       className="h-11 pl-10"
@@ -199,8 +199,8 @@ export default function RegisterPage() {
                       disabled={isLoading}
                       {...field}
                     />
-                  </div>
-                </FormControl>
+                  </FormControl>
+                </div>
                 <FormMessage />
               </FormItem>
             )}
@@ -212,12 +212,12 @@ export default function RegisterPage() {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Mobile number</FormLabel>
-                <FormControl>
-                  <div className="relative">
-                    <Phone
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                      aria-hidden="true"
-                    />
+                <div className="relative">
+                  <Phone
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <FormControl>
                     <Input
                       type="tel"
                       inputMode="numeric"
@@ -235,8 +235,8 @@ export default function RegisterPage() {
                         field.onChange(value);
                       }}
                     />
-                  </div>
-                </FormControl>
+                  </FormControl>
+                </div>
                 <FormDescription>
                   Used to notify you about updates to your reports.
                 </FormDescription>
@@ -251,12 +251,12 @@ export default function RegisterPage() {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Email address</FormLabel>
-                <FormControl>
-                  <div className="relative">
-                    <Mail
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                      aria-hidden="true"
-                    />
+                <div className="relative">
+                  <Mail
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <FormControl>
                     <Input
                       type="email"
                       placeholder="you@example.com"
@@ -265,8 +265,8 @@ export default function RegisterPage() {
                       disabled={isLoading}
                       {...field}
                     />
-                  </div>
-                </FormControl>
+                  </FormControl>
+                </div>
                 <FormMessage />
               </FormItem>
             )}
@@ -328,7 +328,10 @@ export default function RegisterPage() {
           >
             {isLoading ? (
               <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                <Loader2
+                  className="mr-2 h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
                 Creating account…
               </>
             ) : (

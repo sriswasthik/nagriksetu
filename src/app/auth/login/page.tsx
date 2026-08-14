@@ -64,7 +64,7 @@ export default function LoginPage() {
 
       if (!profile) {
         throw new Error(
-          "Your account was authenticated, but your profile could not be loaded."
+          "Your account was authenticated, but your profile could not be loaded.",
         );
       }
 
@@ -89,9 +89,7 @@ export default function LoginPage() {
           break;
 
         default:
-          throw new Error(
-            "Your account has an invalid or unsupported role."
-          );
+          throw new Error("Your account has an invalid or unsupported role.");
       }
     } catch (err) {
       console.error("Login error:", err);
@@ -106,14 +104,18 @@ export default function LoginPage() {
        * rather than surfacing raw auth internals.
        */
       if (message.toLowerCase().includes("invalid login credentials")) {
-        setError("That email and password combination doesn't match an account.");
+        setError(
+          "That email and password combination doesn't match an account.",
+        );
       } else if (message.toLowerCase().includes("email not confirmed")) {
         setError(
-          "Please confirm your email address using the link we sent, then sign in."
+          "Please confirm your email address using the link we sent, then sign in.",
         );
-      } else if (message.toLowerCase().includes("profile could not be loaded")) {
+      } else if (
+        message.toLowerCase().includes("profile could not be loaded")
+      ) {
         setError(
-          "Your account exists, but we couldn't load your profile. Please contact support."
+          "Your account exists, but we couldn't load your profile. Please contact support.",
         );
       } else {
         setError(message);
@@ -172,12 +174,12 @@ export default function LoginPage() {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Email address</FormLabel>
-                <FormControl>
-                  <div className="relative">
-                    <Mail
-                      className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                      aria-hidden="true"
-                    />
+                <div className="relative">
+                  <Mail
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <FormControl>
                     <Input
                       type="email"
                       placeholder="you@example.com"
@@ -186,8 +188,8 @@ export default function LoginPage() {
                       disabled={isLoading}
                       {...field}
                     />
-                  </div>
-                </FormControl>
+                  </FormControl>
+                </div>
                 <FormMessage />
               </FormItem>
             )}
@@ -234,7 +236,10 @@ export default function LoginPage() {
           >
             {isLoading ? (
               <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                <Loader2
+                  className="mr-2 h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
                 Signing in…
               </>
             ) : (

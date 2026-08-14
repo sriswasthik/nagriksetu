@@ -99,7 +99,8 @@ export default function GovernmentWardsPage() {
 
   if (error) {
     return (
-      <div className="mx-auto max-w-lg py-8">
+      <div>
+        <PageHeader title="Wards" />
         <ErrorState
           variant="panel"
           title="Ward data unavailable"

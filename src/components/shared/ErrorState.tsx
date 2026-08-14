@@ -14,6 +14,8 @@ interface ErrorStateProps {
    * "panel"  — full centered card, for a page/section that has nothing else to show.
    */
   variant?: "banner" | "panel";
+  /** Heading level for the panel title; keeps the outline gap-free. */
+  headingLevel?: "h2" | "h3";
 }
 
 /**
@@ -28,6 +30,7 @@ export function ErrorState({
   retryLabel = "Try Again",
   className,
   variant = "banner",
+  headingLevel: Heading = "h2",
 }: ErrorStateProps) {
   if (variant === "panel") {
     return (
@@ -37,7 +40,7 @@ export function ErrorState({
             <AlertCircle className="h-6 w-6 text-destructive" />
           </div>
 
-          <h3 className="text-lg font-semibold text-foreground">{title}</h3>
+          <Heading className="text-lg font-semibold text-foreground">{title}</Heading>
 
           <p className="mt-2 max-w-md text-sm text-muted-foreground">
             {description}

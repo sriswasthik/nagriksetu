@@ -280,6 +280,7 @@ export default function CitizenDashboard() {
             <EmptyState
               icon={FileText}
               title="No reports yet"
+              headingLevel="h3"
               description="When you spot a civic issue — a pothole, a broken streetlight, an overflowing drain — report it here and track its progress from submission to resolution."
               action={
                 <Button asChild>

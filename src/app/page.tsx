@@ -14,7 +14,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/shared/Logo';
 import { Container, Section, SectionHeading } from '@/components/layout/Container';
-import { IsometricCity } from '@/components/visuals/IsometricCity';
+import { IsometricCityLazy } from '@/components/visuals/IsometricCityLazy';
 import { Reveal, RevealGroup, RevealItem } from '@/components/shared/Reveal';
 import { APP_NAME, COMPLAINT_CATEGORIES } from '@/lib/constants';
 
@@ -165,7 +165,7 @@ export default function LandingPage() {
 
               {/* ---- 3D city (decorative, md+ only) ---- */}
               <div className="hidden md:flex md:justify-center lg:justify-end">
-                <IsometricCity className="w-full max-w-[420px]" />
+                <IsometricCityLazy className="w-full max-w-[420px]" />
               </div>
             </div>
           </Container>

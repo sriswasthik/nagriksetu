@@ -9,7 +9,6 @@ import {
   Map,
   MapPin,
   PlusCircle,
-  ShieldCheck,
   User,
   type LucideIcon,
 } from 'lucide-react';

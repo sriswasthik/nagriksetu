@@ -92,7 +92,8 @@ export default function GovernmentAnalyticsPage() {
 
   if (error || !summary) {
     return (
-      <div className="mx-auto max-w-lg py-8">
+      <div>
+        <PageHeader title="Resolution Analytics" />
         <ErrorState
           variant="panel"
           title="Analytics unavailable"

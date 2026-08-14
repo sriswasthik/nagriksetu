@@ -1,335 +1,607 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Camera,
+  CheckCircle2,
+  ExternalLink,
+  ImageOff,
+  Loader2,
+  MapPin,
+  X,
+} from "lucide-react";
+import { toast } from "sonner";
+
+import { PageHeader } from "@/components/shared/PageHeader";
+import { PriorityBadge } from "@/components/shared/PriorityBadge";
+import { SLAIndicator } from "@/components/shared/SLAIndicator";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
+import { StaticLocationMap } from "@/components/map/StaticLocationMap";
+import { PageHeaderSkeleton } from "@/components/shared/skeletons";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
+import { formatDateTime } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
 import type { WorkOrder } from "@/types/workOrder";
-import { PriorityBadge } from "@/components/shared/PriorityBadge";
-import { ArrowLeft, MapPin, MapIcon, Clock, Camera, Loader2, CheckCircle2 } from "lucide-react";
-import { Progress } from "@/components/ui/progress";
-import { Textarea } from "@/components/ui/textarea";
+
+const RESOLUTION_NOTES_MIN = 5;
 
 export default function WorkOrderDetailView() {
   const params = useParams();
   const router = useRouter();
-  const id = params.id as string;
-  
+  const id = typeof params.id === "string" ? params.id : "";
+
   const [order, setOrder] = useState<WorkOrder | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  
-  // Status Update State
+  const [error, setError] = useState<string | null>(null);
+
   const [isUpdating, setIsUpdating] = useState(false);
   const [notes, setNotes] = useState("");
+  const [proofFile, setProofFile] = useState<File | null>(null);
   const [proofPreview, setProofPreview] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const data = await workOrderService.getWorkOrderById(id);
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const data = await workOrderService.getWorkOrderById(id);
+
+      if (!data) {
+        setError("That work order could not be found.");
+      } else {
         setOrder(data);
-      } catch (error) {
-        console.error("Failed to load work order", error);
-      } finally {
-        setIsLoading(false);
       }
+    } catch (loadError) {
+      console.error("Failed to load work order", loadError);
+      setError("We couldn't load this work order. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
-    loadData();
   }, [id]);
 
-  const handleProofUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setProofPreview(URL.createObjectURL(file));
-    }
-  };
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  const handleUpdateStatus = async (newStatus: WorkOrder['status']) => {
+  // Release the preview object URL on unmount / replacement.
+  useEffect(() => {
+    return () => {
+      if (proofPreview) URL.revokeObjectURL(proofPreview);
+    };
+  }, [proofPreview]);
+
+  function handleProofSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("That file isn't an image", {
+        description: "Please attach a photo of the completed work.",
+      });
+      return;
+    }
+
+    if (proofPreview) URL.revokeObjectURL(proofPreview);
+
+    setProofFile(file);
+    setProofPreview(URL.createObjectURL(file));
+    event.target.value = "";
+  }
+
+  async function updateStatus(newStatus: WorkOrder["status"]) {
     setIsUpdating(true);
+
     try {
-      const media = proofPreview ? [{
-        id: `med_${Date.now()}`,
-        url: proofPreview,
-        type: 'image' as const,
-        uploadedAt: new Date().toISOString()
-      }] : [];
+      const media = proofPreview
+        ? [
+            {
+              id: `med_${Date.now()}`,
+              url: proofPreview,
+              type: "image" as const,
+              uploadedAt: new Date().toISOString(),
+            },
+          ]
+        : [];
 
       const updated = await workOrderService.updateWorkOrderStatus({
         workOrderId: id,
         status: newStatus,
         notes: notes.length > 0 ? notes : undefined,
-        media: media,
-        updatedBy: 'officer_1',
-        timestamp: new Date().toISOString()
+        media,
+        updatedBy: "officer_1",
+        timestamp: new Date().toISOString(),
       });
-      
+
       setOrder(updated);
       setNotes("");
+      setProofFile(null);
       setProofPreview(null);
-    } catch (error) {
-      console.error("Failed to update status", error);
+
+      const MESSAGES: Partial<Record<WorkOrder["status"], string>> = {
+        accepted: "Assignment accepted",
+        in_progress: "Work started",
+        proof_submitted: "Proof submitted for review",
+      };
+
+      toast.success(MESSAGES[newStatus] ?? "Work order updated");
+    } catch (updateError) {
+      console.error("Failed to update status", updateError);
+      toast.error("Couldn't update the work order", {
+        description: "Please try again.",
+      });
     } finally {
       setIsUpdating(false);
     }
-  };
+  }
 
   if (isLoading) {
-    return <div className="p-8 text-center"><Progress value={30} className="w-1/2 mx-auto" /></div>;
+    return (
+      <div className="mx-auto max-w-5xl">
+        <PageHeaderSkeleton withAction={false} />
+        <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
+          <Skeleton className="h-80 rounded-lg" />
+          <Skeleton className="h-64 rounded-lg" />
+        </div>
+      </div>
+    );
   }
 
-  if (!order) {
-    return <div className="p-8 text-center text-muted-foreground">Work order not found.</div>;
+  if (error || !order) {
+    return (
+      <div className="mx-auto max-w-5xl">
+        <PageHeader
+          title="Work order"
+          breadcrumbs={[
+            { label: "Work Orders", href: "/officer/work-orders" },
+            { label: "Not found" },
+          ]}
+        />
+        <ErrorState
+          variant="panel"
+          title="Work order unavailable"
+          description={error ?? "This work order could not be loaded."}
+          onRetry={load}
+        />
+        <div className="mt-4 text-center">
+          <Button variant="ghost" onClick={() => router.push("/officer/work-orders")}>
+            Back to work orders
+          </Button>
+        </div>
+      </div>
+    );
   }
 
-  const isCompleted = order.status === 'completed' || order.status === 'proof_submitted';
+  const isClosed = ["completed", "approved", "proof_submitted"].includes(
+    order.status
+  );
+  const canSubmitProof =
+    Boolean(proofPreview) && notes.trim().length >= RESOLUTION_NOTES_MIN;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <div className="flex items-center gap-4 mb-4">
-        <Button variant="ghost" size="icon" onClick={() => router.back()}>
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <span className="text-sm font-medium text-muted-foreground">Back to Tasks</span>
+    <div className="mx-auto max-w-5xl">
+      <PageHeader
+        breadcrumbs={[
+          { label: "Work Orders", href: "/officer/work-orders" },
+          { label: order.id },
+        ]}
+        eyebrow={
+          <span className="font-mono text-sm text-muted-foreground">{order.id}</span>
+        }
+        title={order.complaintTitle}
+      />
+
+      <DemoDataNotice className="mb-6" />
+
+      {/* ---------- Status strip ---------- */}
+      <div className="mb-6 flex flex-wrap items-center gap-2 rounded-lg border bg-card p-4">
+        <Badge
+          variant={order.status === "assigned" ? "warning" : "info"}
+          className="capitalize"
+        >
+          {order.status.replace(/_/g, " ")}
+        </Badge>
+        <PriorityBadge level={order.priorityLevel} score={order.priorityScore} />
+        {!isClosed && <SLAIndicator hoursRemaining={order.slaHoursRemaining} />}
+
+        <span className="ml-auto text-xs text-muted-foreground">
+          {order.departmentName}
+        </span>
       </div>
 
-      <div className="flex flex-col md:flex-row justify-between items-start gap-4">
-        <div>
-          <div className="flex items-center gap-3 mb-2">
-            <span className="font-mono text-sm font-bold text-primary">{order.id}</span>
-            <Badge variant={order.status === 'assigned' ? 'warning' : 'info'} className="capitalize">
-              {order.status.replace('_', ' ')}
-            </Badge>
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight mb-1">{order.complaintTitle}</h1>
-          <div className="text-sm text-muted-foreground">
-            Citizen Report Ref: <Link href="#" className="font-mono underline">{order.complaintId}</Link>
-          </div>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <PriorityBadge level={order.priorityLevel} score={order.priorityScore} className="text-base px-3 py-1" />
-          {!isCompleted && (
-            <div className="flex items-center gap-1.5 text-sm font-medium text-amber-600 bg-amber-50 px-3 py-1.5 rounded-md border border-amber-200">
-              <Clock className="h-4 w-4" />
-              SLA: {order.slaHoursRemaining}h remaining
-            </div>
-          )}
-        </div>
-      </div>
+      <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
+        {/* ================= LEFT: action ================= */}
+        <div className="space-y-6">
+          <section
+            aria-labelledby="action-heading"
+            className={
+              isClosed
+                ? "rounded-lg border border-emerald-200 bg-emerald-50/60 p-5"
+                : "rounded-lg border border-primary/40 bg-card p-5 shadow-sm"
+            }
+          >
+            <h2
+              id="action-heading"
+              className="text-sm font-semibold text-foreground"
+            >
+              {order.status === "assigned"
+                ? "Accept this assignment"
+                : order.status === "accepted"
+                  ? "Start work"
+                  : order.status === "in_progress"
+                    ? "Submit proof of completion"
+                    : "Work submitted"}
+            </h2>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Left Col: Details & Action */}
-        <div className="lg:col-span-2 space-y-6">
-          
-          {/* Action Card based on Status */}
-          <Card className={isCompleted ? "border-emerald-200 bg-emerald-50/50" : "border-primary/50 shadow-md"}>
-            <CardHeader>
-              <CardTitle>
-                {order.status === 'assigned' ? 'Accept Assignment' :
-                 order.status === 'accepted' ? 'Start Work' :
-                 order.status === 'in_progress' ? 'Submit Resolution Proof' :
-                 'Work Completed'}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {order.status === 'assigned' && (
-                <div className="space-y-4">
-                  <p className="text-sm">Please review the details and accept this assignment to acknowledge SLA terms.</p>
-                  <Button onClick={() => handleUpdateStatus('accepted')} disabled={isUpdating} className="w-full sm:w-auto">
-                    {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Accept Assignment
-                  </Button>
+            {order.status === "assigned" && (
+              <div className="mt-3 space-y-4">
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Accepting confirms you have received this work order and
+                  acknowledges the{" "}
+                  <strong className="font-semibold text-foreground">
+                    {order.slaHoursRemaining}h
+                  </strong>{" "}
+                  service-level target.
+                </p>
+                <Button
+                  onClick={() => updateStatus("accepted")}
+                  disabled={isUpdating}
+                >
+                  {isUpdating && (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
+                  )}
+                  Accept assignment
+                </Button>
+              </div>
+            )}
+
+            {order.status === "accepted" && (
+              <div className="mt-3 space-y-4">
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Mark work as started once you are on site.
+                </p>
+                <Button
+                  onClick={() => updateStatus("in_progress")}
+                  disabled={isUpdating}
+                >
+                  {isUpdating && (
+                    <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
+                  )}
+                  Start work
+                </Button>
+              </div>
+            )}
+
+            {order.status === "in_progress" && (
+              <div className="mt-4 space-y-5">
+                <div>
+                  <label
+                    htmlFor="resolution-notes"
+                    className="mb-2 block text-sm font-medium text-foreground"
+                  >
+                    Resolution notes
+                  </label>
+                  <Textarea
+                    id="resolution-notes"
+                    value={notes}
+                    onChange={(event) => setNotes(event.target.value)}
+                    placeholder="What was done, materials used, and anything the supervisor should know."
+                    className="min-h-28 resize-y"
+                  />
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    At least {RESOLUTION_NOTES_MIN} characters.
+                  </p>
                 </div>
-              )}
 
-              {order.status === 'accepted' && (
-                <div className="space-y-4">
-                  <p className="text-sm">Click start when you arrive on site and begin repairs.</p>
-                  <Button onClick={() => handleUpdateStatus('in_progress')} disabled={isUpdating} className="w-full sm:w-auto">
-                    {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Start Work
-                  </Button>
-                </div>
-              )}
+                <div>
+                  <span className="mb-2 block text-sm font-medium text-foreground">
+                    Photographic proof
+                  </span>
 
-              {order.status === 'in_progress' && (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Resolution Notes</label>
-                    <Textarea 
-                      placeholder="Describe what was fixed, materials used, etc..."
-                      value={notes}
-                      onChange={(e) => setNotes(e.target.value)}
-                      className="min-h-[100px]"
-                    />
-                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    id="proof-upload"
+                    onChange={handleProofSelect}
+                    className="sr-only"
+                  />
 
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">Photographic Proof</label>
-                    {!proofPreview ? (
-                      <div className="border-2 border-dashed rounded-lg p-6 text-center hover:bg-muted/50 transition-colors">
-                        <input 
-                          type="file" 
-                          accept="image/*" 
-                          capture="environment"
-                          className="hidden" 
-                          id="proof-upload"
-                          onChange={handleProofUpload}
-                        />
-                        <label htmlFor="proof-upload" className="cursor-pointer flex flex-col items-center">
-                          <Camera className="h-8 w-8 text-muted-foreground mb-2" />
-                          <span className="font-medium text-sm">Take photo of resolved issue</span>
-                        </label>
-                      </div>
-                    ) : (
-                      <div className="relative rounded-lg overflow-hidden border aspect-video max-w-sm">
+                  {!proofPreview ? (
+                    <label
+                      htmlFor="proof-upload"
+                      className="flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed p-6 text-center transition-colors hover:border-primary/50 hover:bg-muted/40 focus-within:ring-2 focus-within:ring-ring"
+                    >
+                      <Camera
+                        className="h-7 w-7 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      <span className="mt-2.5 text-sm font-medium text-foreground">
+                        Photograph the completed work
+                      </span>
+                      <span className="mt-1 text-xs text-muted-foreground">
+                        Required before a supervisor can sign off
+                      </span>
+                    </label>
+                  ) : (
+                    <div className="overflow-hidden rounded-xl border">
+                      <div className="relative bg-neutral-900">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={proofPreview} alt="Proof" className="w-full h-full object-cover" />
-                        <Button 
-                          type="button" 
-                          variant="secondary" 
-                          size="sm" 
-                          className="absolute top-2 right-2"
-                          onClick={() => setProofPreview(null)}
+                        <img
+                          src={proofPreview}
+                          alt="Photograph of the completed repair"
+                          className="max-h-64 w-full object-contain"
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            URL.revokeObjectURL(proofPreview);
+                            setProofPreview(null);
+                            setProofFile(null);
+                          }}
+                          className="absolute right-3 top-3"
                         >
+                          <X className="mr-1 h-4 w-4" aria-hidden="true" />
                           Retake
                         </Button>
                       </div>
-                    )}
-                  </div>
-
-                  <Button 
-                    onClick={() => handleUpdateStatus('proof_submitted')} 
-                    disabled={isUpdating || !proofPreview || notes.length < 5} 
-                    className="w-full"
-                  >
-                    {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Submit Proof for Review
-                  </Button>
-                </div>
-              )}
-
-              {isCompleted && (
-                <div className="flex items-center gap-4 text-emerald-700">
-                  <CheckCircle2 className="h-8 w-8" />
-                  <div>
-                    <p className="font-medium">Resolution submitted successfully.</p>
-                    <p className="text-sm opacity-80">Awaiting citizen confirmation or supervisor review.</p>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Citizen Evidence</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {order.citizenEvidence && order.citizenEvidence.length > 0 ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {order.citizenEvidence.map(media => (
-                    <div key={media.id} className="relative rounded-md overflow-hidden border aspect-video">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={media.url} alt="Evidence" className="object-cover w-full h-full" />
+                      {proofFile && (
+                        <p className="truncate bg-muted/30 p-3 text-xs text-muted-foreground">
+                          {proofFile.name}
+                        </p>
+                      )}
                     </div>
-                  ))}
+                  )}
                 </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">No photos provided by citizen.</p>
-              )}
-            </CardContent>
-          </Card>
-          
+
+                <div>
+                  <Button
+                    onClick={() => updateStatus("proof_submitted")}
+                    disabled={isUpdating || !canSubmitProof}
+                    className="w-full sm:w-auto"
+                  >
+                    {isUpdating && (
+                      <Loader2
+                        className="mr-1 h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                    )}
+                    Submit for verification
+                  </Button>
+
+                  {/* Say why the button is disabled instead of leaving
+                      the officer to guess. */}
+                  {!canSubmitProof && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {!proofPreview && notes.trim().length < RESOLUTION_NOTES_MIN
+                        ? "Add resolution notes and a photo to submit."
+                        : !proofPreview
+                          ? "Add a photo of the completed work to submit."
+                          : "Add resolution notes to submit."}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {isClosed && (
+              <div className="mt-3 flex items-start gap-3">
+                <CheckCircle2
+                  className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600"
+                  aria-hidden="true"
+                />
+                <div>
+                  <p className="text-sm font-medium text-emerald-900">
+                    Resolution submitted
+                  </p>
+                  <p className="mt-0.5 text-sm text-emerald-800/80">
+                    Awaiting supervisor verification and citizen confirmation.
+                  </p>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* ---- Citizen evidence ---- */}
+          <section
+            aria-labelledby="citizen-evidence"
+            className="rounded-lg border bg-card p-5"
+          >
+            <h2
+              id="citizen-evidence"
+              className="text-sm font-semibold text-foreground"
+            >
+              What the citizen reported
+            </h2>
+
+            {order.citizenEvidence && order.citizenEvidence.length > 0 ? (
+              <ul className="mt-3 grid grid-cols-2 gap-3">
+                {order.citizenEvidence.map((item) => (
+                  <li
+                    key={item.id}
+                    className="overflow-hidden rounded-lg border bg-neutral-900"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={item.url}
+                      alt="Photo submitted by the citizen showing the reported issue"
+                      loading="lazy"
+                      className="aspect-video w-full object-cover"
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="mt-3 flex flex-col items-center rounded-lg border border-dashed py-7 text-center">
+                <ImageOff
+                  className="h-5 w-5 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <p className="mt-2 text-sm text-muted-foreground">
+                  No photos were provided with this report.
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* ---- Resolution evidence ---- */}
           {order.resolutionEvidence && order.resolutionEvidence.length > 0 && (
-             <Card>
-             <CardHeader>
-               <CardTitle className="text-lg">Resolution Evidence</CardTitle>
-             </CardHeader>
-             <CardContent>
-                <div className="grid grid-cols-2 gap-2 mb-4">
-                   {order.resolutionEvidence.map(media => (
-                     <div key={media.id} className="relative rounded-md overflow-hidden border aspect-video">
-                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                       <img src={media.url} alt="Resolution" className="object-cover w-full h-full" />
-                     </div>
-                   ))}
-                 </div>
-                 {order.resolutionNotes && (
-                   <div>
-                     <span className="text-sm font-medium text-muted-foreground">Notes:</span>
-                     <p className="text-sm mt-1">{order.resolutionNotes}</p>
-                   </div>
-                 )}
-             </CardContent>
-           </Card>
+            <section
+              aria-labelledby="resolution-evidence"
+              className="rounded-lg border bg-card p-5"
+            >
+              <h2
+                id="resolution-evidence"
+                className="text-sm font-semibold text-foreground"
+              >
+                Proof of completion
+              </h2>
+
+              <ul className="mt-3 grid grid-cols-2 gap-3">
+                {order.resolutionEvidence.map((item) => (
+                  <li
+                    key={item.id}
+                    className="overflow-hidden rounded-lg border bg-neutral-900"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={item.url}
+                      alt="Photo submitted by the officer showing the completed repair"
+                      loading="lazy"
+                      className="aspect-video w-full object-cover"
+                    />
+                  </li>
+                ))}
+              </ul>
+
+              {order.resolutionNotes && (
+                <>
+                  <Separator className="my-4" />
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Notes
+                  </p>
+                  <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+                    {order.resolutionNotes}
+                  </p>
+                </>
+              )}
+            </section>
           )}
-
         </div>
 
-        {/* Right Col: Info Sidebar */}
+        {/* ================= RIGHT: context ================= */}
         <div className="space-y-6">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Location</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="h-40 bg-muted rounded-md border flex items-center justify-center relative overflow-hidden">
-                <div className="absolute inset-0 bg-[url('https://maps.googleapis.com/maps/api/staticmap?center=12.9716,77.5946&zoom=15&size=400x200&markers=color:red%7C12.9716,77.5946&key=placeholder')] bg-cover bg-center opacity-70" />
-                <MapIcon className="h-6 w-6 text-destructive absolute" />
-              </div>
-              <div className="flex items-start gap-2 text-sm font-medium">
-                <MapPin className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                <span>{order.location.address}</span>
-              </div>
-              <Button variant="outline" className="w-full">
-                <MapPin className="mr-2 h-4 w-4" /> Open in Maps
-              </Button>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Timeline</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm">
-              <div className="flex justify-between items-center py-1 border-b">
-                <span className="text-muted-foreground">Created</span>
-                <span>{new Date(order.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
-              </div>
-              <div className="flex justify-between items-center py-1 border-b">
-                <span className="text-muted-foreground">SLA Deadline</span>
-                <span className="font-medium text-amber-600">
-                  {new Date(order.slaDeadline).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                </span>
-              </div>
-              {order.acceptedAt && (
-                <div className="flex justify-between items-center py-1 border-b">
-                  <span className="text-muted-foreground">Accepted</span>
-                  <span>{new Date(order.acceptedAt).toLocaleTimeString([], { timeStyle: 'short' })}</span>
-                </div>
-              )}
-               {order.startedAt && (
-                <div className="flex justify-between items-center py-1 border-b">
-                  <span className="text-muted-foreground">Work Started</span>
-                  <span>{new Date(order.startedAt).toLocaleTimeString([], { timeStyle: 'short' })}</span>
-                </div>
-              )}
-               {order.completedAt && (
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-muted-foreground">Resolved</span>
-                  <span className="text-emerald-600 font-medium">
-                    {new Date(order.completedAt).toLocaleTimeString([], { timeStyle: 'short' })}
-                  </span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+          <section
+            aria-labelledby="location-heading"
+            className="overflow-hidden rounded-lg border bg-card"
+          >
+            <div className="p-5 pb-4">
+              <h2
+                id="location-heading"
+                className="text-sm font-semibold text-foreground"
+              >
+                Location
+              </h2>
+              <p className="mt-2 flex items-start gap-2 text-sm leading-relaxed text-muted-foreground">
+                <MapPin className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                {order.location.address}
+              </p>
+            </div>
 
+            <div className="h-44 border-t">
+              <StaticLocationMap
+                latitude={order.location.latitude}
+                longitude={order.location.longitude}
+              />
+            </div>
+
+            <div className="p-3">
+              <Button asChild variant="outline" className="w-full">
+                <a
+                  href={`https://www.openstreetmap.org/?mlat=${order.location.latitude}&mlon=${order.location.longitude}#map=18/${order.location.latitude}/${order.location.longitude}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="mr-1 h-4 w-4" aria-hidden="true" />
+                  Open in maps
+                </a>
+              </Button>
+            </div>
+          </section>
+
+          {/* ---- Audit trail ---- */}
+          <section
+            aria-labelledby="trail-heading"
+            className="rounded-lg border bg-card p-5"
+          >
+            <h2 id="trail-heading" className="text-sm font-semibold text-foreground">
+              Timeline
+            </h2>
+
+            <dl className="mt-3 space-y-0 text-sm">
+              {[
+                { label: "Created", value: order.createdAt },
+                { label: "Assigned", value: order.assignedAt },
+                { label: "Accepted", value: order.acceptedAt },
+                { label: "Started", value: order.startedAt },
+                { label: "Completed", value: order.completedAt },
+                { label: "Verified", value: order.verifiedAt },
+              ]
+                .filter((entry) => entry.value)
+                .map((entry) => (
+                  <div
+                    key={entry.label}
+                    className="flex items-baseline justify-between gap-3 border-b py-2.5 last:border-0"
+                  >
+                    <dt className="text-muted-foreground">{entry.label}</dt>
+                    <dd className="text-right text-xs font-medium text-foreground">
+                      {formatDateTime(entry.value as string)}
+                    </dd>
+                  </div>
+                ))}
+
+              <div className="flex items-baseline justify-between gap-3 border-t pt-3">
+                <dt className="text-muted-foreground">SLA deadline</dt>
+                <dd className="text-right text-xs font-semibold text-amber-700">
+                  {formatDateTime(order.slaDeadline)}
+                </dd>
+              </div>
+            </dl>
+          </section>
+
+          <section className="rounded-lg border bg-card p-5">
+            <h2 className="text-sm font-semibold text-foreground">Assignment</h2>
+            <dl className="mt-3 space-y-2.5 text-sm">
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Officer</dt>
+                <dd className="font-medium text-foreground">
+                  {order.officerName || "Unassigned"}
+                </dd>
+              </div>
+              {order.supervisorName && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Supervisor</dt>
+                  <dd className="font-medium text-foreground">
+                    {order.supervisorName}
+                  </dd>
+                </div>
+              )}
+              <div className="flex justify-between gap-3">
+                <dt className="text-muted-foreground">Source report</dt>
+                <dd className="font-mono text-xs text-foreground">
+                  {order.complaintId}
+                </dd>
+              </div>
+            </dl>
+          </section>
+        </div>
       </div>
     </div>
   );

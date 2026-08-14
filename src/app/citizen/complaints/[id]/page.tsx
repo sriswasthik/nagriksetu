@@ -158,7 +158,14 @@ export default function ComplaintDetailsPage() {
   /* ---------------- Error ---------------- */
   if (error || !details) {
     return (
-      <div className="mx-auto max-w-xl py-8">
+      <div>
+        <PageHeader
+          title="Report"
+          breadcrumbs={[
+            { label: "My Issues", href: "/citizen/complaints" },
+            { label: "Report" },
+          ]}
+        />
         <ErrorState
           variant="panel"
           title="We couldn't open this report"

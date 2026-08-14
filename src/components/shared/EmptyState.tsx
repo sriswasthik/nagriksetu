@@ -8,6 +8,12 @@ interface EmptyStateProps {
   description?: string;
   action?: React.ReactNode;
   className?: string;
+  /**
+   * Heading level for the title. Use "h2" directly under a page h1,
+   * "h3" when nested inside a section that already has an h2 — so
+   * the document outline never skips a level.
+   */
+  headingLevel?: "h2" | "h3";
 }
 
 /**
@@ -22,6 +28,7 @@ export function EmptyState({
   description,
   action,
   className,
+  headingLevel: Heading = "h2",
 }: EmptyStateProps) {
   return (
     <Card className={cn("border-dashed", className)}>
@@ -32,7 +39,7 @@ export function EmptyState({
           </div>
         )}
 
-        <h3 className="text-lg font-semibold text-foreground">{title}</h3>
+        <Heading className="text-lg font-semibold text-foreground">{title}</Heading>
 
         {description && (
           <p className="mt-2 max-w-sm text-sm text-muted-foreground">

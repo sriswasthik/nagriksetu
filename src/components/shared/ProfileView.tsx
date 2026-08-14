@@ -103,7 +103,8 @@ export function ProfileView() {
 
   if (error || !profile) {
     return (
-      <div className="mx-auto max-w-lg py-8">
+      <div className="mx-auto max-w-2xl">
+        <PageHeader title="Profile" />
         <ErrorState
           variant="panel"
           title="Profile unavailable"

@@ -61,7 +61,8 @@ export default function GovernmentDepartmentsPage() {
 
   if (error) {
     return (
-      <div className="mx-auto max-w-lg py-8">
+      <div>
+        <PageHeader title="Departments" />
         <ErrorState
           variant="panel"
           title="Department data unavailable"

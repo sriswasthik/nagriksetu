@@ -146,9 +146,9 @@ export default function CitizenMapPage() {
               />
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-[1.7fr_1fr]">
+            <div className="grid min-w-0 gap-4 lg:grid-cols-[1.7fr_1fr]">
               {/* ---------- Map ---------- */}
-              <div className="relative overflow-hidden rounded-lg border bg-card">
+              <div className="relative min-w-0 overflow-hidden rounded-lg border bg-card">
                 <div className="h-[380px] sm:h-[460px] lg:h-[560px]">
                   <IssuesMap
                     complaints={visible}
@@ -165,7 +165,7 @@ export default function CitizenMapPage() {
               </div>
 
               {/* ---------- List / selected detail ---------- */}
-              <div className="space-y-3">
+              <div className="min-w-0 space-y-3">
                 {selected ? (
                   <div className="rounded-lg border bg-card p-4">
                     <div className="flex items-start justify-between gap-2">

@@ -133,7 +133,8 @@ export default function GovernmentDashboard() {
 
   if (error || !summary || !sla) {
     return (
-      <div className="mx-auto max-w-lg py-8">
+      <div>
+        <PageHeader title="City Operations" />
         <ErrorState
           variant="panel"
           title="Operations data unavailable"
