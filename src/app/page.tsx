@@ -30,10 +30,10 @@ export default function LandingPage() {
         {/* Hero Section with 3D Mockup */}
         <section className="relative px-4 pt-24 pb-36 md:pt-32 md:pb-48 overflow-hidden">
           {/* Background gradient */}
-          <div className="absolute inset-0 bg-gradient-to-br from-[#13240F] via-[#1D3B17] to-[#3C6E25]" />
+          <div className="absolute inset-0 bg-gradient-to-br from-black via-zinc-900 to-zinc-800" />
           {/* Glowing orbital background blurs */}
-          <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[#7EC151]/20 blur-[120px] rounded-full pointer-events-none" />
-          <div className="absolute bottom-10 right-10 w-[350px] h-[350px] bg-[#FED24F]/15 blur-[100px] rounded-full pointer-events-none" />
+          <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-white/5 blur-[120px] rounded-full pointer-events-none" />
+          <div className="absolute bottom-10 right-10 w-[350px] h-[350px] bg-zinc-400/10 blur-[100px] rounded-full pointer-events-none" />
 
           {/* Subtle pattern overlay */}
           <div className="absolute inset-0 opacity-[0.06]" style={{
@@ -50,10 +50,10 @@ export default function LandingPage() {
               {/* Left Column: Hero Text */}
               <div className="lg:col-span-7 text-center lg:text-left">
                 {/* 3D Shimmer Badge */}
-                <div className="inline-flex items-center gap-2 rounded-full border border-[#B2D959]/40 bg-[#152613]/80 backdrop-blur-md px-4 py-1.5 text-xs font-bold text-[#FED24F] shadow-lg mb-6 animate-fade-in">
-                  <Zap className="h-4 w-4 text-[#FED24F] animate-pulse" />
+                <div className="inline-flex items-center gap-2 rounded-full border border-[#71717a]/40 bg-[#09090b]/80 backdrop-blur-md px-4 py-1.5 text-xs font-bold text-[white] shadow-lg mb-6 animate-fade-in">
+                  <Zap className="h-4 w-4 text-[white] animate-pulse" />
                   <span>AI-POWERED CIVIC OPERATIONS</span>
-                  <span className="h-1.5 w-1.5 rounded-full bg-[#FED24F] animate-pulse-dot" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-[white] animate-pulse-dot" />
                 </div>
 
                 <h1 className="mb-6 text-4xl font-extrabold tracking-tight text-white sm:text-5xl md:text-6xl text-balance leading-[1.1] animate-slide-up">
@@ -66,7 +66,7 @@ export default function LandingPage() {
                 
                 <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4 animate-slide-up stagger-2">
                   <Link href="/citizen/report" className="w-full sm:w-auto">
-                    <Button size="lg" className="h-13 px-8 text-base font-extrabold bg-[#FED24F] text-[#182816] hover:bg-[#FFF449] w-full shadow-lg transition-all duration-300 hover:scale-105 active:scale-95">
+                    <Button size="lg" className="h-13 px-8 text-base font-extrabold bg-[white] text-[black] hover:bg-[#f4f4f5] w-full shadow-lg transition-all duration-300 hover:scale-105 active:scale-95">
                       Report an Issue
                       <ArrowRight className="ml-2 h-5 w-5" />
                     </Button>
@@ -89,7 +89,7 @@ export default function LandingPage() {
                       <div className="h-3 w-3 rounded-full bg-amber-400" />
                       <div className="h-3 w-3 rounded-full bg-emerald-400" />
                     </div>
-                    <span className="text-[10px] font-mono text-[#FED24F] font-semibold tracking-wider uppercase bg-[#FED24F]/10 px-2 py-0.5 rounded-full border border-[#FED24F]/20">
+                    <span className="text-[10px] font-mono text-[white] font-semibold tracking-wider uppercase bg-[white]/10 px-2 py-0.5 rounded-full border border-[white]/20">
                       LIVE STREAM
                     </span>
                   </div>
@@ -97,8 +97,8 @@ export default function LandingPage() {
                   {/* Mock Image Box */}
                   <div className="relative aspect-video rounded-2xl bg-gradient-to-br from-[#1E3B17] to-[#3C6E25] p-4 flex flex-col justify-between overflow-hidden mb-4 border border-white/10 group">
                     <div className="flex items-center justify-between z-10">
-                      <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-[#152613]/80 text-[#B2D959] backdrop-blur-md px-2.5 py-1 rounded-full border border-[#B2D959]/30">
-                        <MapPin className="h-3 w-3 text-[#FED24F]" />
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-[#09090b]/80 text-[#71717a] backdrop-blur-md px-2.5 py-1 rounded-full border border-[#71717a]/30">
+                        <MapPin className="h-3 w-3 text-[white]" />
                         GPS Verified
                       </span>
                       <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-500/20 text-amber-300 backdrop-blur-md px-2.5 py-1 rounded-full border border-amber-400/30">
@@ -119,13 +119,13 @@ export default function LandingPage() {
                   <div className="bg-white/5 rounded-xl p-3 border border-white/10 space-y-2">
                     <div className="flex items-center justify-between text-xs text-white/80">
                       <span className="flex items-center gap-1.5 font-medium">
-                        <Sparkles className="h-3.5 w-3.5 text-[#FED24F]" />
+                        <Sparkles className="h-3.5 w-3.5 text-[white]" />
                         AI Analysis Status
                       </span>
-                      <span className="text-[#B2D959] font-semibold text-[11px]">Completed</span>
+                      <span className="text-[#71717a] font-semibold text-[11px]">Completed</span>
                     </div>
                     <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-[#B2D959] to-[#FED24F] w-4/5 rounded-full animate-pulse" />
+                      <div className="h-full bg-gradient-to-r from-[#71717a] to-[white] w-4/5 rounded-full animate-pulse" />
                     </div>
                     <p className="text-[11px] text-white/50">Auto-assigned to Engineering Division (SLA: 24h)</p>
                   </div>
@@ -141,9 +141,9 @@ export default function LandingPage() {
           <div className="container mx-auto max-w-4xl">
             <div className="grid grid-cols-3 gap-3 md:gap-6">
               {[
-                { icon: Users, value: 'Citizens First', label: 'Direct Government Link', color: 'text-[#7EC151]' },
-                { icon: Shield, value: 'Transparent', label: 'Real-time GPS Proof', color: 'text-[#FED24F]' },
-                { icon: Brain, value: 'AI Powered', label: 'Auto Prioritization', color: 'text-[#B2D959]' },
+                { icon: Users, value: 'Citizens First', label: 'Direct Government Link', color: 'text-[black]' },
+                { icon: Shield, value: 'Transparent', label: 'Real-time GPS Proof', color: 'text-[white]' },
+                { icon: Brain, value: 'AI Powered', label: 'Auto Prioritization', color: 'text-[#71717a]' },
               ].map((stat, i) => (
                 <div 
                   key={i} 
@@ -178,8 +178,8 @@ export default function LandingPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               {[
                 { icon: MapPin, title: "Report", desc: "Citizen uploads photo with auto GPS coordinates.", step: "01", accent: "border-t-primary" },
-                { icon: Brain, title: "AI Analysis", desc: "System classifies, deduplicates, and prioritizes.", step: "02", accent: "border-t-[#FED24F]" },
-                { icon: CheckCircle, title: "Resolution", desc: "Assigned officer completes work with proof photo.", step: "03", accent: "border-t-[#B2D959]" },
+                { icon: Brain, title: "AI Analysis", desc: "System classifies, deduplicates, and prioritizes.", step: "02", accent: "border-t-[white]" },
+                { icon: CheckCircle, title: "Resolution", desc: "Assigned officer completes work with proof photo.", step: "03", accent: "border-t-[#71717a]" },
                 { icon: BarChart, title: "Governance", desc: "Dashboards update and citizens confirm fix.", step: "04", accent: "border-t-primary" },
               ].map((item, i) => (
                 <div 
@@ -213,7 +213,7 @@ export default function LandingPage() {
               </div>
               <span className="text-base font-extrabold text-foreground">{APP_NAME}</span>
             </div>
-            <p className="text-xs text-muted-foreground font-medium">© 2026 NagrikSetu · Smart India Hackathon</p>
+            <p className="text-xs text-muted-foreground font-medium">© 2026 CityTrace · Smart India Hackathon</p>
           </div>
         </div>
       </footer>

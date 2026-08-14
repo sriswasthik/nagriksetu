@@ -11,13 +11,13 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: "NagrikSetu — Civic Issue Reporting Platform",
-    template: "%s | NagrikSetu",
+    default: "CityTrace — Civic Issue Reporting Platform",
+    template: "%s | CityTrace",
   },
   description:
-    "NagrikSetu is an AI-powered civic operations platform that connects citizens with government authorities to report and resolve civic issues efficiently.",
-  keywords: ["civic", "complaints", "government", "Smart India Hackathon", "NagrikSetu"],
-  authors: [{ name: "NagrikSetu Team" }],
+    "CityTrace is an AI-powered civic operations platform that connects citizens with government authorities to report and resolve civic issues efficiently.",
+  keywords: ["civic", "complaints", "government", "Smart India Hackathon", "CityTrace"],
+  authors: [{ name: "CityTrace Team" }],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

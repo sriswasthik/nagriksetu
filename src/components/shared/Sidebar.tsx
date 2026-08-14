@@ -67,7 +67,7 @@ export function Sidebar({ navType }: SidebarProps) {
       </ScrollArea>
       
       <div className="p-4 border-t">
-        <p className="text-xs font-medium text-muted-foreground">NagrikSetu</p>
+        <p className="text-xs font-medium text-muted-foreground">CityTrace</p>
         <p className="mt-0.5 text-[10px] text-muted-foreground/60">Smart India Hackathon · v1.0</p>
       </div>
     </aside>

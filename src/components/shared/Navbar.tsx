@@ -43,7 +43,7 @@ export function Navbar({ navType }: NavbarProps) {
                   <ShieldAlert className="h-5 w-5" />
                 </div>
                 <div>
-                  <span className="font-extrabold text-xl tracking-tight text-foreground block">NagrikSetu</span>
+                  <span className="font-extrabold text-xl tracking-tight text-foreground block">CityTrace</span>
                   <span className="text-[10px] text-muted-foreground font-medium tracking-wider uppercase">Civic Ops Platform</span>
                 </div>
               </div>
@@ -58,7 +58,7 @@ export function Navbar({ navType }: NavbarProps) {
               <ShieldAlert className="h-5 w-5" />
             </div>
             <span className="font-extrabold text-xl tracking-tight text-foreground hidden sm:inline-block transition-colors group-hover:text-primary">
-              NagrikSetu
+              CityTrace
             </span>
           </Link>
         </div>

@@ -1,12 +1,12 @@
-export const APP_NAME = 'NagrikSetu';
+export const APP_NAME = 'CityTrace';
 export const APP_TAGLINE = 'From Citizen Voices to Smarter Governance';
 export const APP_DESCRIPTION = 'Transform civic complaints into intelligent, prioritized, trackable and verifiable civic operations.';
 
 export const COLORS = {
-  primary: '#7EC151',
-  secondary: '#1C3318',
-  foreground: '#182816',
-  background: '#F9FBF6',
+  primary: '#09090B',
+  secondary: '#27272A',
+  foreground: '#09090B',
+  background: '#FAFAFA',
 } as const;
 
 export const DEPARTMENTS = [

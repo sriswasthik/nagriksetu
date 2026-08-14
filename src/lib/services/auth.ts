@@ -44,10 +44,30 @@ export async function signIn({
 }: SignInInput) {
   const supabase = createClient();
 
-  const { data, error } = await supabase.auth.signInWithPassword({
+  let authResult = await supabase.auth.signInWithPassword({
     email,
     password,
   });
+
+  // Fallback for legacy database accounts created before project rename
+  if (authResult.error && authResult.error.message.includes("Invalid login credentials")) {
+    const legacyEmail = email
+      .replace("@citytrace.gov.in", "@nagriksetu.gov.in")
+      .replace("@citytrace.temp", "@nagriksetu.temp");
+      
+    const legacyPassword = password === "placeholder-no-passwords-in-citytrace" 
+      ? "placeholder-no-passwords-in-nagriksetu" 
+      : password;
+
+    if (legacyEmail !== email || legacyPassword !== password) {
+      authResult = await supabase.auth.signInWithPassword({
+        email: legacyEmail,
+        password: legacyPassword,
+      });
+    }
+  }
+
+  const { data, error } = authResult;
 
   if (error) {
     throw error;
@@ -108,12 +128,28 @@ export async function getCurrentProfile() {
 export const authService = {
   login: async (credentials: { identifier: string; otp: string }) => {
     const supabase = createClient();
-    const email = credentials.identifier.includes('@') ? credentials.identifier : `${credentials.identifier}@nagriksetu.temp`;
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const email = credentials.identifier.includes('@') ? credentials.identifier : `${credentials.identifier}@citytrace.temp`;
+    
+    let authResult = await supabase.auth.signInWithPassword({
       email,
-      password: "placeholder-no-passwords-in-nagriksetu",
+      password: "placeholder-no-passwords-in-citytrace",
     });
 
+    // Fallback for legacy database accounts created before project rename
+    if (authResult.error && authResult.error.message.includes("Invalid login credentials")) {
+      const legacyEmail = email
+        .replace("@citytrace.gov.in", "@nagriksetu.gov.in")
+        .replace("@citytrace.temp", "@nagriksetu.temp");
+
+      if (legacyEmail !== email) {
+        authResult = await supabase.auth.signInWithPassword({
+          email: legacyEmail,
+          password: "placeholder-no-passwords-in-nagriksetu",
+        });
+      }
+    }
+
+    const { data, error } = authResult;
     if (error) throw error;
     
     const { data: profile } = await supabase
@@ -133,11 +169,11 @@ export const authService = {
   
   register: async (userData: { name: string; mobile: string; email: string; password?: string; role: string }) => {
     const supabase = createClient();
-    const email = userData.email || `${userData.mobile}@nagriksetu.temp`;
+    const email = userData.email || `${userData.mobile}@citytrace.temp`;
     
     const { data, error } = await supabase.auth.signUp({
       email,
-      password: userData.password || "placeholder-no-passwords-in-nagriksetu",
+      password: userData.password || "placeholder-no-passwords-in-citytrace",
       options: {
         data: {
           full_name: userData.name,

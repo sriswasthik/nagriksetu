@@ -153,7 +153,7 @@ export default function LoginPage() {
     <main className="relative flex min-h-screen bg-background">
       {/* Left Brand Panel — visible on md+ */}
       <div className="hidden md:flex md:w-[45%] lg:w-[50%] relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#13240F] via-[#1D3B17] to-[#3C6E25]" />
+        <div className="absolute inset-0 bg-gradient-to-br from-black via-zinc-900 to-zinc-800" />
         {/* Dot pattern */}
         <div className="absolute inset-0 opacity-[0.04]" style={{
           backgroundImage: `radial-gradient(circle at 1px 1px, rgba(255,255,255,0.3) 1px, transparent 0)`,
@@ -198,7 +198,7 @@ export default function LoginPage() {
 
           {/* Footer */}
           <p className="text-[11px] text-white/30">
-            © 2026 NagrikSetu · Smart India Hackathon
+            © 2026 CityTrace · Smart India Hackathon
           </p>
         </div>
       </div>
@@ -226,7 +226,7 @@ export default function LoginPage() {
             </CardTitle>
 
             <CardDescription className="text-muted-foreground text-sm">
-              Sign in to your NagrikSetu account
+              Sign in to your CityTrace account
             </CardDescription>
           </CardHeader>
 
@@ -300,7 +300,7 @@ export default function LoginPage() {
 
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 Authentication is handled securely through Supabase
-                Auth. Your application role determines which NagrikSetu
+                Auth. Your application role determines which CityTrace
                 workspace you can access.
               </p>
             </div>

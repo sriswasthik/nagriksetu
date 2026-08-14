@@ -167,7 +167,7 @@ export default function RegisterPage() {
     <main className="relative flex min-h-screen bg-background">
       {/* Left Brand Panel — visible on md+ */}
       <div className="hidden md:flex md:w-[45%] lg:w-[50%] relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-[#13240F] via-[#1D3B17] to-[#3C6E25]" />
+        <div className="absolute inset-0 bg-gradient-to-br from-black via-zinc-900 to-zinc-800" />
         {/* Dot pattern */}
         <div className="absolute inset-0 opacity-[0.04]" style={{
           backgroundImage: `radial-gradient(circle at 1px 1px, rgba(255,255,255,0.3) 1px, transparent 0)`,
@@ -187,7 +187,7 @@ export default function RegisterPage() {
           <div className="space-y-8 max-w-sm">
             <div>
               <h2 className="text-2xl lg:text-3xl font-bold leading-tight text-balance">
-                Join NagrikSetu Today
+                Join CityTrace Today
               </h2>
               <p className="mt-3 text-sm text-white/60 leading-relaxed">
                 Empower your community. Report issues, track progress, and build a better city together.
@@ -212,7 +212,7 @@ export default function RegisterPage() {
 
           {/* Footer */}
           <p className="text-[11px] text-white/30">
-            © 2026 NagrikSetu · Smart India Hackathon
+            © 2026 CityTrace · Smart India Hackathon
           </p>
         </div>
       </div>
@@ -240,7 +240,7 @@ export default function RegisterPage() {
             </CardTitle>
 
             <CardDescription className="text-muted-foreground text-sm">
-              Join NagrikSetu to report and track civic issues
+              Join CityTrace to report and track civic issues
             </CardDescription>
           </CardHeader>
 

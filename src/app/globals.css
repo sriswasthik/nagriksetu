@@ -36,33 +36,33 @@
 
 :root {
   /* ============================================================
-     NagrikSetu — Color Hunt Palette (#FED24F #FFF449 #B2D959 #7EC151)
+     CityTrace — Color Hunt Palette (#FED24F #FFF449 #B2D959 #7EC151)
   ============================================================ */
 
-  --background: #F9FBF6;
-  --foreground: #182816;
+  --background: #FAFAFA;
+  --foreground: #09090B;
 
-  --primary: #7EC151;
+  --primary: #09090B;
   --primary-foreground: #FFFFFF;
 
-  --secondary: #1C3318;
+  --secondary: #27272A;
   --secondary-foreground: #FFFFFF;
 
-  --muted: #F1F6E9;
-  --muted-foreground: #5B7256;
+  --muted: #F4F4F5;
+  --muted-foreground: #71717A;
 
-  --accent: #F4FAC8;
-  --accent-foreground: #2A481F;
+  --accent: #F4F4F5;
+  --accent-foreground: #09090B;
 
   --card: #FFFFFF;
-  --card-foreground: #182816;
+  --card-foreground: #09090B;
 
   --popover: #FFFFFF;
-  --popover-foreground: #182816;
+  --popover-foreground: #09090B;
 
-  --border: #E1ECCB;
-  --input: #E1ECCB;
-  --ring: #7EC151;
+  --border: #E4E4E7;
+  --input: #E4E4E7;
+  --ring: #09090B;
 
   --destructive: #E11D48;
   --destructive-foreground: #FFFFFF;
@@ -74,10 +74,10 @@
   --ch-green: #7EC151;
 
   /* Sidebar */
-  --sidebar: #152613;
-  --sidebar-foreground: #F9FBF6;
-  --sidebar-accent: #7EC151;
-  --sidebar-border: #233D20;
+  --sidebar: #09090B;
+  --sidebar-foreground: #FAFAFA;
+  --sidebar-accent: #27272A;
+  --sidebar-border: #27272A;
 
   /* Chart palette */
   --chart-1: #7EC151;
@@ -87,13 +87,13 @@
   --chart-5: #0EA5E9;
 
   /* Elevation & 3D Layered Shadow Tokens */
-  --shadow-xs: 0 1px 2px 0 rgb(24 40 22 / 0.04);
-  --shadow-sm: 0 2px 4px 0 rgb(24 40 22 / 0.05);
-  --shadow-md: 0 6px 16px -2px rgb(24 40 22 / 0.08), 0 2px 6px -2px rgb(24 40 22 / 0.04);
-  --shadow-lg: 0 16px 32px -4px rgb(24 40 22 / 0.12), 0 4px 12px -4px rgb(24 40 22 / 0.06);
-  --shadow-card: 0 4px 12px 0 rgb(24 40 22 / 0.05);
-  --shadow-card-hover: 0 20px 40px -6px rgb(126 193 81 / 0.28), 0 8px 16px -4px rgb(24 40 22 / 0.1);
-  --shadow-3d: 0 20px 35px -8px rgba(126, 193, 81, 0.3), 0 10px 15px -5px rgba(24, 40, 22, 0.15);
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --shadow-sm: 0 2px 4px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 6px 16px -2px rgb(0 0 0 / 0.08), 0 2px 6px -2px rgb(0 0 0 / 0.04);
+  --shadow-lg: 0 16px 32px -4px rgb(0 0 0 / 0.12), 0 4px 12px -4px rgb(0 0 0 / 0.06);
+  --shadow-card: 0 4px 12px 0 rgb(0 0 0 / 0.05);
+  --shadow-card-hover: 0 20px 40px -6px rgb(0 0 0 / 0.15), 0 8px 16px -4px rgb(0 0 0 / 0.08);
+  --shadow-3d: 0 20px 35px -8px rgba(0, 0, 0, 0.15), 0 10px 15px -5px rgba(0, 0, 0, 0.1);
 
   /* Transition tokens */
   --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -150,12 +150,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #C4DC9C;
+  background: #D4D4D8;
   border-radius: 99px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #7EC151;
+  background: #71717A;
 }
 
 /* ============================================================
@@ -163,8 +163,8 @@ body {
 ============================================================ */
 
 ::selection {
-  background: rgba(126, 193, 81, 0.25);
-  color: #182816;
+  background: rgba(0, 0, 0, 0.15);
+  color: #000;
 }
 
 /* ============================================================
@@ -252,10 +252,10 @@ body {
 /* Glow Pulse */
 @keyframes glow-pulse {
   0%, 100% {
-    box-shadow: 0 0 15px rgba(126, 193, 81, 0.4), 0 0 30px rgba(254, 210, 79, 0.2);
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.1), 0 0 30px rgba(0, 0, 0, 0.05);
   }
   50% {
-    box-shadow: 0 0 25px rgba(126, 193, 81, 0.7), 0 0 45px rgba(254, 210, 79, 0.4);
+    box-shadow: 0 0 25px rgba(0, 0, 0, 0.15), 0 0 45px rgba(0, 0, 0, 0.1);
   }
 }
 
@@ -307,22 +307,22 @@ body {
 .card-3d:hover {
   transform: translateY(-6px) rotateX(2deg) rotateY(-1deg);
   box-shadow: var(--shadow-3d);
-  border-color: rgba(126, 193, 81, 0.5);
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 .glass-panel {
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(225, 236, 203, 0.9);
-  box-shadow: 0 10px 30px -5px rgba(24, 40, 22, 0.06);
+  border: 1px solid rgba(228, 228, 231, 0.9);
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.06);
 }
 
 .glass-dark-panel {
-  background: rgba(21, 38, 19, 0.82);
+  background: rgba(9, 9, 11, 0.82);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(178, 217, 89, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.4);
 }
 
@@ -378,7 +378,7 @@ body {
 ============================================================ */
 
 .gradient-primary {
-  background: linear-gradient(135deg, #7EC151 0%, #B2D959 100%);
+  background: linear-gradient(135deg, #18181b 0%, #000000 100%);
 }
 
 .gradient-gold {
@@ -387,13 +387,13 @@ body {
 
 .gradient-primary-soft {
   background: linear-gradient(135deg,
-    rgba(126, 193, 81, 0.12) 0%,
-    rgba(254, 210, 79, 0.08) 100%
+    rgba(0, 0, 0, 0.05) 0%,
+    rgba(0, 0, 0, 0.02) 100%
   );
 }
 
 .gradient-dark-panel {
-  background: linear-gradient(135deg, #13240F 0%, #1D3B17 50%, #3C6E25 100%);
+  background: linear-gradient(135deg, #000000 0%, #09090b 50%, #18181b 100%);
 }
 
 /* ============================================================

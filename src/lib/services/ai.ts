@@ -1,6 +1,6 @@
 /**
  * ============================================================
- * NAGRIKSETU — AI COMPLAINT ANALYSIS SERVICE
+ * CITYTRACE — AI COMPLAINT ANALYSIS SERVICE
  * ============================================================
  *
  * MOCK AI ENGINE
@@ -34,7 +34,7 @@ import type {
  * CONSTANTS
  * ========================================================== */
 
-const AI_MODEL_NAME = "nagriksetu-mock-ai-v2";
+const AI_MODEL_NAME = "citytrace-mock-ai-v2";
 
 /* ============================================================
  * DATABASE TYPES
