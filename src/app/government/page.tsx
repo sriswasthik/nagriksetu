@@ -1,265 +1,540 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ClipboardList,
+  Clock3,
+  TrendingUp,
+} from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
 import { PageHeader } from "@/components/shared/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { analyticsService } from "@/lib/services/analytics";
-import type { AnalyticsSummary, TrendDataPoint, CategoryDistribution, DepartmentPerformance, SLAData, WardHealth } from "@/types/analytics";
-import { Loader2, TrendingUp, AlertTriangle, CheckCircle2, Clock, MapPin } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, LineChart, PieChart, Pie, Cell } from "recharts";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
+import { StatCard } from "@/components/shared/StatCard";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
+import {
+  ChartSkeleton,
+  PageHeaderSkeleton,
+  StatGridSkeleton,
+} from "@/components/shared/skeletons";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import {
+  AXIS_PROPS,
+  CHART_COLORS,
+  CHART_SERIES,
+  ChartLegend,
+  ChartTooltip,
+  GRID_PROPS,
+} from "@/components/charts/chartTheme";
+import { analyticsService } from "@/lib/services/analytics";
+import type {
+  AnalyticsSummary,
+  CategoryDistribution,
+  DepartmentPerformance,
+  SLAData,
+  TrendDataPoint,
+  WardHealth,
+} from "@/types/analytics";
 
-const COLORS = ['#09090b', '#27272a', '#52525b', '#a1a1aa', '#d4d4d8'];
+const HEALTH_VARIANT = {
+  good: "success",
+  moderate: "warning",
+  poor: "destructive",
+  critical: "critical",
+} as const;
 
+/**
+ * ============================================================
+ * CITY OPERATIONS OVERVIEW
+ * ============================================================
+ *
+ * Structured around the questions a duty officer actually asks at
+ * the start of a shift, in order:
+ *   1. Is anything breaching or critical right now?
+ *   2. Are we keeping pace with incoming reports?
+ *   3. Where is the load concentrated?
+ *
+ * Every chart answers one of those. Figures come from local sample
+ * data, which is labelled on the page.
+ */
 export default function GovernmentDashboard() {
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [trends, setTrends] = useState<TrendDataPoint[]>([]);
   const [categories, setCategories] = useState<CategoryDistribution[]>([]);
   const [departments, setDepartments] = useState<DepartmentPerformance[]>([]);
   const [wards, setWards] = useState<WardHealth[]>([]);
+  const [sla, setSla] = useState<SLAData | null>(null);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const [sum, trnd, cats, depts, wrds] = await Promise.all([
-          analyticsService.getSummary(),
-          analyticsService.getTrends(),
-          analyticsService.getCategoryDistribution(),
-          analyticsService.getDepartmentPerformance(),
-          analyticsService.getWardHealth()
-        ]);
-        
-        setSummary(sum);
-        setTrends(trnd);
-        setCategories(cats);
-        setDepartments(depts);
-        setWards(wrds);
-      } catch (error) {
-        console.error("Failed to load analytics", error);
-      } finally {
-        setIsLoading(false);
-      }
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const [sum, trnd, cats, depts, wrds, slaData] = await Promise.all([
+        analyticsService.getSummary(),
+        analyticsService.getTrends(),
+        analyticsService.getCategoryDistribution(),
+        analyticsService.getDepartmentPerformance(),
+        analyticsService.getWardHealth(),
+        analyticsService.getSLAData(),
+      ]);
+
+      setSummary(sum);
+      setTrends(trnd);
+      setCategories(cats);
+      setDepartments(depts);
+      setWards(wrds);
+      setSla(slaData);
+    } catch (loadError) {
+      console.error("Failed to load analytics", loadError);
+      setError("We couldn't load the operations data. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
-    loadData();
   }, []);
 
-  if (isLoading || !summary) {
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-[50vh]">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div>
+        <PageHeaderSkeleton />
+        <StatGridSkeleton count={4} />
+        <div className="mt-6 grid gap-6 lg:grid-cols-7">
+          <ChartSkeleton className="lg:col-span-4" />
+          <ChartSkeleton className="lg:col-span-3" height="h-[250px]" />
+        </div>
       </div>
     );
   }
 
+  if (error || !summary || !sla) {
+    return (
+      <div>
+        <PageHeader title="City Operations" />
+        <ErrorState
+          variant="panel"
+          title="Operations data unavailable"
+          description={error ?? "The dashboard data could not be loaded."}
+          onRetry={load}
+        />
+      </div>
+    );
+  }
+
+  const resolutionRate = Math.round(
+    (summary.resolvedComplaints / summary.totalComplaints) * 100
+  );
+
+  const slaTotal = sla.withinSLA + sla.atRisk + sla.breached;
+
+  // Worst-performing wards first — that is where attention is needed.
+  const wardsByNeed = [...wards].sort((a, b) => a.slaCompliance - b.slaCompliance);
+
   return (
-    <div className="space-y-8">
-      <PageHeader 
-        title="Command Center" 
-        description="City-wide civic operations overview and analytics."
+    <div>
+      <PageHeader
+        title="City Operations"
+        description="Live operational picture across every department and ward."
+        action={
+          <Button asChild>
+            <Link href="/government/complaints">
+              <ClipboardList className="mr-1 h-4 w-4" aria-hidden="true" />
+              Issue queue
+            </Link>
+          </Button>
+        }
       />
 
-      {/* KPI Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Complaints</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{summary.totalComplaints.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground mt-1 text-emerald-600 flex items-center">
-              <TrendingUp className="h-3 w-3 mr-1" /> +{summary.complaintsToday} today
-            </p>
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Resolution Rate</CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {Math.round((summary.resolvedComplaints / summary.totalComplaints) * 100)}%
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {summary.resolvedComplaints.toLocaleString()} total resolved
-            </p>
-          </CardContent>
-        </Card>
+      <DemoDataNotice className="mb-6" />
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">SLA Compliance</CardTitle>
-            <Clock className="h-4 w-4 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{summary.slaCompliance}%</div>
-            <p className="text-xs text-muted-foreground mt-1">Target: 90%</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-destructive/50 bg-destructive/5">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-destructive">Critical Issues</CardTitle>
-            <AlertTriangle className="h-4 w-4 text-destructive" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-destructive">{summary.criticalComplaints}</div>
-            <p className="text-xs text-muted-foreground mt-1">Require immediate attention</p>
-          </CardContent>
-        </Card>
+      {/* ================= 1. WHAT NEEDS ATTENTION ================= */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="Critical open"
+          value={summary.criticalComplaints}
+          hint="Public-safety priority"
+          icon={AlertTriangle}
+          tone="danger"
+          href="/government/complaints"
+        />
+        <StatCard
+          label="SLA breached"
+          value={sla.breached}
+          hint={`${((sla.breached / slaTotal) * 100).toFixed(1)}% of all reports`}
+          icon={Clock3}
+          tone="danger"
+        />
+        <StatCard
+          label="Open reports"
+          value={summary.openComplaints}
+          hint={`${summary.complaintsToday} new today`}
+          icon={ClipboardList}
+          tone="warning"
+        />
+        <StatCard
+          label="Resolution rate"
+          value={resolutionRate}
+          suffix="%"
+          hint={`${summary.resolvedComplaints.toLocaleString("en-IN")} resolved to date`}
+          icon={CheckCircle2}
+          tone="success"
+        />
       </div>
 
-      <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="departments">Departments</TabsTrigger>
-          <TabsTrigger value="wards">Wards Map</TabsTrigger>
-        </TabsList>
-        
-        <TabsContent value="overview" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-            {/* Trends Chart */}
-            <Card className="lg:col-span-4">
-              <CardHeader>
-                <CardTitle>Resolution Trends (30 Days)</CardTitle>
-              </CardHeader>
-              <CardContent className="pl-2">
-                <div className="h-[300px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trends} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                      <XAxis dataKey="date" tickFormatter={(val) => new Date(val).getDate().toString()} />
-                      <YAxis />
-                      <Tooltip 
-                        labelFormatter={(label: any) => new Date(label).toLocaleDateString()}
-                        contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0' }}
-                      />
-                      <Legend />
-                      <Line type="monotone" dataKey="complaints" stroke="#64748b" strokeWidth={2} name="Reported" dot={false} />
-                      <Line type="monotone" dataKey="resolved" stroke="#853953" strokeWidth={2} name="Resolved" dot={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </CardContent>
-            </Card>
+      {/* ================= 2. SLA POSTURE ================= */}
+      <section
+        aria-labelledby="sla-heading"
+        className="mt-6 rounded-lg border bg-card p-5"
+      >
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="sla-heading" className="text-sm font-semibold text-foreground">
+            Service-level posture
+          </h2>
+          <p className="tabular text-sm text-muted-foreground">
+            <span className="font-semibold text-foreground">
+              {summary.slaCompliance}%
+            </span>{" "}
+            within target · goal 90%
+          </p>
+        </div>
 
-            {/* Category Distribution */}
-            <Card className="lg:col-span-3">
-              <CardHeader>
-                <CardTitle>Issue Categories</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[250px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={categories}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={90}
-                        paddingAngle={2}
-                        dataKey="count"
-                      >
-                        {categories.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip 
-                        formatter={(value: any) => Number(value).toLocaleString()}
-                        contentStyle={{ borderRadius: '8px' }}
-                      />
-                      <Legend layout="vertical" verticalAlign="middle" align="right" />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
+        {/* Single stacked bar — proportion is the question here, and
+            three numbers do not warrant a full chart. */}
+        <div
+          className="mt-4 flex h-3 overflow-hidden rounded-full"
+          role="img"
+          aria-label={`${sla.withinSLA} reports within SLA, ${sla.atRisk} at risk, ${sla.breached} breached`}
+        >
+          <span
+            className="bg-emerald-500"
+            style={{ width: `${(sla.withinSLA / slaTotal) * 100}%` }}
+          />
+          <span
+            className="bg-amber-500"
+            style={{ width: `${(sla.atRisk / slaTotal) * 100}%` }}
+          />
+          <span
+            className="bg-red-500"
+            style={{ width: `${(sla.breached / slaTotal) * 100}%` }}
+          />
+        </div>
 
-        <TabsContent value="departments" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Department Performance Matrix</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[400px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={departments} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="department" />
-                    <YAxis yAxisId="left" orientation="left" stroke="#853953" />
-                    <YAxis yAxisId="right" orientation="right" stroke="#64748b" />
-                    <Tooltip contentStyle={{ borderRadius: '8px' }} />
-                    <Legend />
-                    <Bar yAxisId="left" dataKey="resolved" fill="#853953" name="Resolved" radius={[4, 4, 0, 0]} />
-                    <Bar yAxisId="left" dataKey="open" fill="#cbd5e1" name="Open" radius={[4, 4, 0, 0]} />
-                    <Line yAxisId="right" type="monotone" dataKey="slaCompliance" stroke="#10b981" strokeWidth={3} name="SLA %" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="wards" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-3">
-            <Card className="md:col-span-2">
-              <CardHeader>
-                <CardTitle>Ward Health Map</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-[400px] bg-muted rounded-md flex items-center justify-center relative border overflow-hidden">
-                  <div className="absolute inset-0 bg-[url('https://maps.googleapis.com/maps/api/staticmap?center=12.9716,77.5946&zoom=12&size=800x400&style=feature:all|element:labels|visibility:off&style=feature:water|element:geometry|color:0x3b82f6&key=placeholder')] bg-cover bg-center opacity-40" />
-                  <div className="z-10 text-center bg-background/80 p-6 rounded-lg backdrop-blur-sm border shadow-sm">
-                    <MapPin className="h-8 w-8 mx-auto mb-2 text-primary" />
-                    <h3 className="font-semibold text-lg">Interactive Heatmap</h3>
-                    <p className="text-sm text-muted-foreground mt-1 max-w-xs">
-                      Live integration with GIS system to visualize complaint density and ward health scores.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <div className="space-y-4">
-              {wards.map((ward) => (
-                <Card key={ward.ward}>
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="font-semibold">{ward.ward}</span>
-                      <Badge variant={
-                        ward.healthScore === 'good' ? 'success' :
-                        ward.healthScore === 'moderate' ? 'warning' :
-                        ward.healthScore === 'poor' ? 'destructive' : 'critical'
-                      } className="capitalize">
-                        {ward.healthScore}
-                      </Badge>
-                    </div>
-                    <div className="space-y-1.5 text-sm mt-3">
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Open Issues</span>
-                        <span className="font-medium">{ward.openComplaints}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">SLA Compliance</span>
-                        <span className="font-medium">{ward.slaCompliance}%</span>
-                      </div>
-                      <Progress value={ward.slaCompliance} className="h-1.5 mt-1" />
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+        <dl className="mt-4 grid grid-cols-3 gap-4">
+          {[
+            { label: "Within target", value: sla.withinSLA, dot: "bg-emerald-500" },
+            { label: "At risk", value: sla.atRisk, dot: "bg-amber-500" },
+            { label: "Breached", value: sla.breached, dot: "bg-red-500" },
+          ].map((item) => (
+            <div key={item.label}>
+              <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span
+                  aria-hidden="true"
+                  className={`h-2 w-2 shrink-0 rounded-full ${item.dot}`}
+                />
+                {item.label}
+              </dt>
+              <dd className="tabular mt-1 text-lg font-bold text-foreground">
+                {item.value.toLocaleString("en-IN")}
+              </dd>
             </div>
+          ))}
+        </dl>
+      </section>
+
+      {/* ================= 3. PACE & MIX ================= */}
+      <div className="mt-6 grid gap-6 lg:grid-cols-7">
+        {/* Are we keeping up with intake? */}
+        <section
+          aria-labelledby="trend-heading"
+          className="rounded-lg border bg-card p-5 lg:col-span-4"
+        >
+          <h2 id="trend-heading" className="text-sm font-semibold text-foreground">
+            Reported vs resolved
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Last 30 days. Resolved tracking below reported means a growing
+            backlog.
+          </p>
+
+          <div className="mt-4 h-[280px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart
+                data={trends}
+                margin={{ top: 8, right: 8, left: -18, bottom: 0 }}
+              >
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis
+                  dataKey="date"
+                  {...AXIS_PROPS}
+                  tickFormatter={(value) => new Date(value).getDate().toString()}
+                  interval="preserveStartEnd"
+                  minTickGap={20}
+                />
+                <YAxis {...AXIS_PROPS} width={48} />
+                <Tooltip
+                  content={
+                    <ChartTooltip
+                      labelFormatter={(label) =>
+                        new Date(label).toLocaleDateString("en-IN", {
+                          day: "numeric",
+                          month: "short",
+                        })
+                      }
+                    />
+                  }
+                />
+                <Line
+                  type="monotone"
+                  dataKey="complaints"
+                  name="Reported"
+                  stroke={CHART_COLORS.neutral}
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="resolved"
+                  name="Resolved"
+                  stroke={CHART_COLORS.primary}
+                  strokeWidth={2.5}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
-        </TabsContent>
-      </Tabs>
+
+          <ChartLegend
+            payload={[
+              { value: "Reported", color: CHART_COLORS.neutral },
+              { value: "Resolved", color: CHART_COLORS.primary },
+            ]}
+          />
+        </section>
+
+        {/* What kind of work dominates? */}
+        <section
+          aria-labelledby="mix-heading"
+          className="rounded-lg border bg-card p-5 lg:col-span-3"
+        >
+          <h2 id="mix-heading" className="text-sm font-semibold text-foreground">
+            Where the volume is
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Share of all reports by issue type.
+          </p>
+
+          <div className="mt-2 h-[210px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={categories}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={54}
+                  outerRadius={82}
+                  paddingAngle={2}
+                  dataKey="count"
+                  nameKey="category"
+                  strokeWidth={0}
+                >
+                  {categories.map((entry, index) => (
+                    <Cell
+                      key={entry.category}
+                      fill={CHART_SERIES[index % CHART_SERIES.length]}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip content={<ChartTooltip />} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Explicit list beats a cramped pie legend. */}
+          <ul className="mt-3 space-y-2">
+            {categories.map((entry, index) => (
+              <li key={entry.category} className="flex items-center gap-2 text-xs">
+                <span
+                  aria-hidden="true"
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{
+                    background: CHART_SERIES[index % CHART_SERIES.length],
+                  }}
+                />
+                <span className="truncate text-muted-foreground">
+                  {entry.category}
+                </span>
+                <span className="tabular ml-auto font-semibold text-foreground">
+                  {entry.percentage}%
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
+
+      {/* ================= 4. DEPARTMENT LOAD ================= */}
+      <section
+        aria-labelledby="dept-heading"
+        className="mt-6 rounded-lg border bg-card p-5"
+      >
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 id="dept-heading" className="text-sm font-semibold text-foreground">
+              Open vs resolved by department
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              A tall open bar next to a short resolved bar signals a capacity
+              problem.
+            </p>
+          </div>
+
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/government/departments">
+              Department detail
+              <ArrowRight className="ml-1 h-4 w-4" aria-hidden="true" />
+            </Link>
+          </Button>
+        </div>
+
+        <div className="mt-4 h-[320px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={departments}
+              margin={{ top: 8, right: 8, left: -18, bottom: 0 }}
+            >
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis
+                dataKey="department"
+                {...AXIS_PROPS}
+                tick={{ fill: "#6B6B6B", fontSize: 11 }}
+                interval={0}
+                height={48}
+                angle={-18}
+                textAnchor="end"
+              />
+              <YAxis {...AXIS_PROPS} width={48} />
+              <Tooltip content={<ChartTooltip />} cursor={{ fill: "#F3F4F4" }} />
+              <Bar
+                dataKey="resolved"
+                name="Resolved"
+                fill={CHART_COLORS.primary}
+                radius={[4, 4, 0, 0]}
+                maxBarSize={38}
+              />
+              <Bar
+                dataKey="open"
+                name="Open"
+                fill={CHART_COLORS.primaryLight}
+                radius={[4, 4, 0, 0]}
+                maxBarSize={38}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        <ChartLegend
+          payload={[
+            { value: "Resolved", color: CHART_COLORS.primary },
+            { value: "Open", color: CHART_COLORS.primaryLight },
+          ]}
+        />
+      </section>
+
+      {/* ================= 5. WARDS NEEDING ATTENTION ================= */}
+      <section aria-labelledby="wards-heading" className="mt-6">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2
+              id="wards-heading"
+              className="text-lg font-semibold tracking-tight text-foreground"
+            >
+              Wards needing attention
+            </h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Lowest service-level compliance first.
+            </p>
+          </div>
+
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/government/wards">
+              All wards
+              <ArrowRight className="ml-1 h-4 w-4" aria-hidden="true" />
+            </Link>
+          </Button>
+        </div>
+
+        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {wardsByNeed.slice(0, 6).map((ward) => (
+            <li key={ward.ward} className="rounded-lg border bg-card p-4">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="truncate text-sm font-semibold text-foreground">
+                  {ward.ward}
+                </h3>
+                <Badge
+                  variant={HEALTH_VARIANT[ward.healthScore]}
+                  className="capitalize"
+                >
+                  {ward.healthScore}
+                </Badge>
+              </div>
+
+              <dl className="mt-3 space-y-1.5 text-xs">
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">Open</dt>
+                  <dd className="tabular font-semibold text-foreground">
+                    {ward.openComplaints}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">Critical</dt>
+                  <dd className="tabular font-semibold text-foreground">
+                    {ward.critical}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">SLA compliance</dt>
+                  <dd className="tabular font-semibold text-foreground">
+                    {ward.slaCompliance}%
+                  </dd>
+                </div>
+              </dl>
+
+              <Progress value={ward.slaCompliance} className="mt-2.5 h-1.5" />
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {/* Trend footnote keeps intake context near the charts. */}
+      <p className="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
+        <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
+        Average resolution time {summary.avgResolutionHours} hours ·{" "}
+        {summary.resolvedToday} resolved today
+      </p>
     </div>
   );
 }

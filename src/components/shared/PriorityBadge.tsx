@@ -1,40 +1,55 @@
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { getPriorityMeta } from "@/lib/design/status";
 import { type PriorityLevel } from "@/types/complaint";
 
-const PRIORITY_LABELS: Record<PriorityLevel, string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-};
+interface PriorityBadgeProps {
+  level: PriorityLevel;
+  /** AI priority score, shown alongside the label when provided. */
+  score?: number;
+  className?: string;
+  showIcon?: boolean;
+  size?: "sm" | "md";
+}
 
-const PRIORITY_DOT_COLORS: Record<PriorityLevel, string> = {
-  critical: 'bg-red-500',
-  high: 'bg-amber-500',
-  medium: 'bg-blue-500',
-  low: 'bg-emerald-500',
-};
+/**
+ * Canonical priority pill. Critical/high carry an icon by default
+ * so urgency is legible without relying on color alone.
+ */
+export function PriorityBadge({
+  level,
+  score,
+  className,
+  showIcon,
+  size = "md",
+}: PriorityBadgeProps) {
+  const meta = getPriorityMeta(level);
+  const Icon = meta.icon;
 
-export function PriorityBadge({ level, score, className }: { level: PriorityLevel; score?: number; className?: string }) {
-  const getVariant = (l: PriorityLevel) => {
-    switch (l) {
-      case "critical":
-        return "critical";
-      case "high":
-        return "warning";
-      case "medium":
-        return "info";
-      case "low":
-        return "success";
-      default:
-        return "default";
-    }
-  };
+  // Urgent levels always get the icon — color alone is not an
+  // accessible signal for "this needs attention now".
+  const withIcon = showIcon ?? (level === "critical" || level === "high");
 
   return (
-    <Badge variant={getVariant(level)} className={className}>
-      <span className={`status-dot ${PRIORITY_DOT_COLORS[level]}`} />
-      {PRIORITY_LABELS[level]}
-    </Badge>
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border font-medium",
+        size === "sm" ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-xs",
+        meta.badge,
+        className
+      )}
+    >
+      {withIcon ? (
+        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : (
+        <span
+          className={cn("h-1.5 w-1.5 rounded-full", meta.dot)}
+          aria-hidden="true"
+        />
+      )}
+      {meta.label}
+      {score !== undefined && (
+        <span className="tabular opacity-70">· {score}</span>
+      )}
+    </span>
   );
 }

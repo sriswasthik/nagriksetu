@@ -2,11 +2,19 @@ export const APP_NAME = 'CityTrace';
 export const APP_TAGLINE = 'From Citizen Voices to Smarter Governance';
 export const APP_DESCRIPTION = 'Transform civic complaints into intelligent, prioritized, trackable and verifiable civic operations.';
 
+/**
+ * Brand palette, mirroring the design tokens in app/globals.css.
+ *
+ * The merge auto-resolved this to main's zinc values, which would have
+ * left it silently contradicting the actual CityTrace tokens. Nothing
+ * imports it today (components read the CSS variables), so it is kept
+ * only as documentation — and it must agree with globals.css.
+ */
 export const COLORS = {
-  primary: '#09090B',
-  secondary: '#27272A',
-  foreground: '#09090B',
-  background: '#FAFAFA',
+  primary: '#853953',
+  secondary: '#612D53',
+  foreground: '#2C2C2C',
+  background: '#F3F4F4',
 } as const;
 
 export const DEPARTMENTS = [

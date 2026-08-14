@@ -1,63 +1,48 @@
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { getStatusMeta, getToneClasses } from "@/lib/design/status";
 import { type ComplaintStatus } from "@/types/complaint";
 
-const STATUS_LABELS: Record<ComplaintStatus, string> = {
-  submitted: 'Submitted',
-  ai_analyzed: 'AI Analyzed',
-  assigned: 'Assigned',
-  accepted: 'Accepted',
-  in_progress: 'In Progress',
-  proof_submitted: 'Proof Submitted',
-  supervisor_review: 'Under Review',
-  citizen_confirmation: 'Awaiting Confirmation',
-  resolved: 'Resolved',
-  reopened: 'Reopened',
-  rejected: 'Rejected',
-};
+interface StatusBadgeProps {
+  status: ComplaintStatus;
+  className?: string;
+  /** Show the status icon alongside the label. */
+  showIcon?: boolean;
+  size?: "sm" | "md";
+}
 
-const STATUS_DOT_COLORS: Record<ComplaintStatus, string> = {
-  submitted: 'bg-amber-500',
-  ai_analyzed: 'bg-blue-500',
-  assigned: 'bg-amber-500',
-  accepted: 'bg-blue-500',
-  in_progress: 'bg-blue-500',
-  proof_submitted: 'bg-violet-500',
-  supervisor_review: 'bg-violet-500',
-  citizen_confirmation: 'bg-violet-500',
-  resolved: 'bg-emerald-500',
-  reopened: 'bg-orange-500',
-  rejected: 'bg-red-500',
-};
-
-export function StatusBadge({ status, className }: { status: ComplaintStatus; className?: string }) {
-  const getVariant = (s: ComplaintStatus) => {
-    switch (s) {
-      case "resolved":
-        return "success";
-      case "rejected":
-        return "destructive";
-      case "submitted":
-      case "assigned":
-        return "warning";
-      case "ai_analyzed":
-      case "in_progress":
-      case "accepted":
-        return "info";
-      case "proof_submitted":
-      case "supervisor_review":
-      case "citizen_confirmation":
-        return "secondary";
-      case "reopened":
-        return "default";
-      default:
-        return "default";
-    }
-  };
+/**
+ * Canonical status pill. Reads label + tone from the shared status
+ * system so a given status is presented identically wherever it
+ * appears (lists, detail headers, map panels, admin queue).
+ */
+export function StatusBadge({
+  status,
+  className,
+  showIcon = false,
+  size = "md",
+}: StatusBadgeProps) {
+  const meta = getStatusMeta(status);
+  const tone = getToneClasses(meta.tone);
+  const Icon = meta.icon;
 
   return (
-    <Badge variant={getVariant(status)} className={className}>
-      <span className={`status-dot ${STATUS_DOT_COLORS[status]}`} />
-      {STATUS_LABELS[status]}
-    </Badge>
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border font-medium",
+        size === "sm" ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-xs",
+        tone.badge,
+        className
+      )}
+    >
+      {showIcon ? (
+        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : (
+        <span
+          className={cn("h-1.5 w-1.5 rounded-full", tone.dot)}
+          aria-hidden="true"
+        />
+      )}
+      {meta.label}
+    </span>
   );
 }

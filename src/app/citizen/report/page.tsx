@@ -1,1806 +1,647 @@
 "use client";
 
+import { useState } from "react";
+import Link from "next/link";
 import {
-  useEffect,
-  useRef,
-  useState,
-  type ChangeEvent,
-} from "react";
-
-import { useRouter } from "next/navigation";
-
-import {
-  useForm,
-} from "react-hook-form";
-
-import {
-  zodResolver,
-} from "@hookform/resolvers/zod";
-
-import * as z from "zod";
-
-import {
-  PageHeader,
-} from "@/components/shared/PageHeader";
-
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
-
-import {
-  Button,
-} from "@/components/ui/button";
-
-import {
-  Input,
-} from "@/components/ui/input";
-
-import {
-  Textarea,
-} from "@/components/ui/textarea";
-
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-
-import {
-  Progress,
-} from "@/components/ui/progress";
-
-import {
-  Alert,
-  AlertDescription,
-} from "@/components/ui/alert";
-
-import {
-  Camera,
-  ImagePlus,
-  MapPin,
-  Loader2,
-  CheckCircle2,
-  LocateFixed,
+  AlertCircle,
+  ArrowLeft,
   ArrowRight,
-  Mic,
-  Navigation,
-  X,
+  CheckCircle2,
+  Loader2,
+  MapPin,
+  Send,
 } from "lucide-react";
+import { toast } from "sonner";
 
+import { PageHeader } from "@/components/shared/PageHeader";
+import { StepIndicator, type Step } from "@/components/shared/StepIndicator";
+import { CategoryPicker, toDatabaseCategory } from "@/components/report/CategoryPicker";
+import { PhotoUpload } from "@/components/report/PhotoUpload";
+import { LocationPicker } from "@/components/map/LocationPicker";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Separator } from "@/components/ui/separator";
+import { StatusBadge } from "@/components/shared/StatusBadge";
+import { CopyButton } from "@/components/shared/CopyButton";
+import { formatCategory } from "@/lib/design/status";
+import { COMPLAINT_CATEGORIES } from "@/lib/constants";
 import {
   createComplaint,
   uploadComplaintEvidence,
 } from "@/lib/services/complaints";
+import type { Complaint } from "@/types/complaint";
 
-
-/*
+/**
  * ============================================================
- * VALIDATION
+ * REPORT AN ISSUE
  * ============================================================
+ *
+ * Four steps rather than six: category and photo belong together
+ * ("what happened"), and location is a single step because GPS
+ * usually answers it in one tap. Progressive disclosure keeps each
+ * screen to one decision.
+ *
+ * Validation is per-step and inline, so the user is never told about
+ * a problem three screens after causing it.
+ *
+ * Backend contract is unchanged: createComplaint() then
+ * uploadComplaintEvidence(), then redirect to the detail page with
+ * ?process=ai so the existing AI pipeline runs.
  */
 
-const reportSchema = z.object({
-  title: z
-    .string()
-    .min(
-      5,
-      "Title must be at least 5 characters"
-    )
-    .max(
-      150,
-      "Title cannot exceed 150 characters"
-    ),
+const STEPS: Step[] = [
+  { key: "what", label: "What happened" },
+  { key: "where", label: "Location" },
+  { key: "details", label: "Details" },
+  { key: "review", label: "Review" },
+];
 
-  description: z
-    .string()
-    .min(
-      10,
-      "Please provide more details about the issue"
-    )
-    .max(
-      2000,
-      "Description cannot exceed 2000 characters"
-    ),
+const TITLE_MAX = 150;
+const DESCRIPTION_MAX = 2000;
+const DESCRIPTION_MIN = 10;
 
-  location: z.object({
-    address: z
-      .string()
-      .min(
-        5,
-        "Location/address is required"
-      )
-      .max(
-        300,
-        "Address cannot exceed 300 characters"
-      ),
-
-    latitude: z
-      .number()
-      .refine(
-        (value) => value !== 0,
-        {
-          message:
-            "Please capture your current location",
-        }
-      ),
-
-    longitude: z
-      .number()
-      .refine(
-        (value) => value !== 0,
-        {
-          message:
-            "Please capture your current location",
-        }
-      ),
-
-    ward: z
-      .string()
-      .optional(),
-  }),
-
-  media: z
-    .array(z.string())
-    .optional(),
-});
-
-
-type ReportFormValues =
-  z.infer<typeof reportSchema>;
-
-
-/*
- * ============================================================
- * PAGE
- * ============================================================
- */
+interface FormState {
+  category: string | null;
+  file: File | null;
+  previewUrl: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  address: string;
+  title: string;
+  description: string;
+}
 
 export default function ReportIssuePage() {
-
-  const router =
-    useRouter();
-
-
-  /*
-   * ==========================================================
-   * FILE INPUT REF
-   * ==========================================================
-   *
-   * IMPORTANT:
-   *
-   * We intentionally use a React ref instead of relying on
-   * <label htmlFor="..."> to open the hidden input.
-   *
-   * This makes the upload button work consistently on:
-   *
-   * - Desktop browsers
-   * - Android browsers
-   * - iOS browsers
-   * - Localhost development
-   */
-
-  const fileInputRef =
-    useRef<HTMLInputElement | null>(
-      null
-    );
-
-
-  /*
-   * ==========================================================
-   * STATE
-   * ==========================================================
-   */
-
-  const [
-    step,
-    setStep,
-  ] = useState<1 | 2>(1);
-
-  const [
-    isSubmitting,
-    setIsSubmitting,
-  ] = useState(false);
-
-  const [
-    isCapturingLocation,
-    setIsCapturingLocation,
-  ] = useState(false);
-
-  const [
-    mediaPreview,
-    setMediaPreview,
-  ] = useState<string | null>(
-    null
-  );
-
-  const [
-    mediaFile,
-    setMediaFile,
-  ] = useState<File | null>(
-    null
-  );
-
-  const [
-    error,
-    setError,
-  ] = useState<string | null>(
-    null
-  );
-
-  const [
-    success,
-    setSuccess,
-  ] = useState(false);
-
-
-  /*
-   * ==========================================================
-   * FORM
-   * ==========================================================
-   */
-
-  const form =
-    useForm<ReportFormValues>({
-      resolver:
-        zodResolver(
-          reportSchema
-        ),
-
-      defaultValues: {
-        title: "",
-
-        description: "",
-
-        location: {
-          address: "",
-          latitude: 0,
-          longitude: 0,
-          ward: undefined,
-        },
-
-        media: [],
-      },
-    });
-
-
-  /*
-   * ==========================================================
-   * PREVIEW CLEANUP
-   * ==========================================================
-   */
-
-  useEffect(() => {
-
-    return () => {
-
-      if (mediaPreview) {
-        URL.revokeObjectURL(
-          mediaPreview
-        );
-      }
-
-    };
-
-  }, [mediaPreview]);
-
-
-  /*
-   * ==========================================================
-   * OPEN FILE PICKER
-   * ==========================================================
-   */
-
-  const openFilePicker =
-    () => {
-
-      if (isSubmitting) {
-        return;
-      }
-
-      /*
-       * Clear the value first.
-       *
-       * This is important because selecting the SAME image
-       * twice should still trigger onChange.
-       */
-
-      if (
-        fileInputRef.current
-      ) {
-        fileInputRef.current.value =
-          "";
-
-        fileInputRef.current.click();
-      }
-    };
-
-
-  /*
-   * ==========================================================
-   * PHOTO SELECTION
-   * ==========================================================
-   */
-
-  const handlePhotoUpload =
-    (
-      event: ChangeEvent<HTMLInputElement>
-    ) => {
-
-      const file =
-        event.target.files?.[0];
-
-
-      if (!file) {
-        return;
-      }
-
-
-      setError(null);
-
-
-      /*
-       * ------------------------------------------------------
-       * IMAGE TYPE VALIDATION
-       * ------------------------------------------------------
-       */
-
-      const isImage =
-        file.type.startsWith(
-          "image/"
-        );
-
-
-      /*
-       * Some mobile devices may return an empty MIME type.
-       *
-       * In that case we also check the extension.
-       */
-
-      const extension =
-        file.name
-          .split(".")
-          .pop()
-          ?.toLowerCase() || "";
-
-
-      const allowedExtensions = [
-        "jpg",
-        "jpeg",
-        "png",
-        "webp",
-        "heic",
-        "heif",
-      ];
-
-
-      const validImage =
-        isImage ||
-        allowedExtensions.includes(
-          extension
-        );
-
-
-      if (!validImage) {
-
-        setError(
-          "Please select a valid image file."
-        );
-
-        event.target.value =
-          "";
-
-        return;
-      }
-
-
-      /*
-       * ------------------------------------------------------
-       * SIZE VALIDATION
-       * ------------------------------------------------------
-       */
-
-      const maxSize =
-        10 * 1024 * 1024;
-
-
-      if (
-        file.size >
-        maxSize
-      ) {
-
-        setError(
-          "Image size must be less than 10 MB."
-        );
-
-        event.target.value =
-          "";
-
-        return;
-      }
-
-
-      /*
-       * ------------------------------------------------------
-       * REMOVE OLD PREVIEW
-       * ------------------------------------------------------
-       */
-
-      if (mediaPreview) {
-
-        URL.revokeObjectURL(
-          mediaPreview
-        );
-      }
-
-
-      /*
-       * ------------------------------------------------------
-       * CREATE PREVIEW
-       * ------------------------------------------------------
-       */
-
-      const objectUrl =
-        URL.createObjectURL(
-          file
-        );
-
-
-      /*
-       * Store the REAL File.
-       *
-       * This is what gets uploaded to Supabase Storage
-       * during complaint submission.
-       */
-
-      setMediaFile(
-        file
-      );
-
-
-      setMediaPreview(
-        objectUrl
-      );
-
-
-      form.setValue(
-        "media",
-        [objectUrl],
-        {
-          shouldDirty: true,
-        }
-      );
-
-
-      /*
-       * Reset input so the same image can be selected again.
-       */
-
-      event.target.value =
-        "";
-    };
-
-
-  /*
-   * ==========================================================
-   * REMOVE / CHANGE PHOTO
-   * ==========================================================
-   */
-
-  const handleRemovePhoto =
-    () => {
-
-      if (mediaPreview) {
-
-        URL.revokeObjectURL(
-          mediaPreview
-        );
-      }
-
-
-      setMediaPreview(
-        null
-      );
-
-      setMediaFile(
-        null
-      );
-
-
-      form.setValue(
-        "media",
-        [],
-        {
-          shouldDirty: true,
-        }
-      );
-
-
-      if (
-        fileInputRef.current
-      ) {
-
-        fileInputRef.current.value =
-          "";
-      }
-    };
-
-
-  /*
-   * ==========================================================
-   * LOCATION
-   * ==========================================================
-   */
-
-  async function reverseGeocodeLocation(
-    latitude: number,
-    longitude: number
-  ): Promise<string | null> {
-    try {
-      const response = await fetch(
-        `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(
-          latitude
-        )}&longitude=${encodeURIComponent(
-          longitude
-        )}&localityLanguage=en`
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          `Reverse geocoding failed: ${response.status}`
-        );
-      }
-
-      const data = await response.json();
-
-      const parts = [
-        data.locality,
-        data.city,
-        data.principalSubdivision,
-        data.countryName,
-      ].filter(
-        (value): value is string =>
-          Boolean(
-            value &&
-            typeof value === "string" &&
-            value.trim()
-          )
-      );
-
-      /*
-       * Remove duplicate location names.
-       *
-       * Example:
-       * Hyderabad, Hyderabad, Telangana, India
-       *
-       * becomes:
-       * Hyderabad, Telangana, India
-       */
-
-      const uniqueParts = Array.from(
-        new Set(
-          parts.map((part) =>
-            part.trim()
-          )
-        )
-      );
-
-      if (
-        uniqueParts.length === 0
-      ) {
-        return null;
-      }
-
-      return uniqueParts.join(
-        ", "
-      );
-    } catch (error) {
-      console.error(
-        "Reverse geocoding error:",
-        error
-      );
-
-      return null;
-    }
+  const [step, setStep] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [created, setCreated] = useState<Complaint | null>(null);
+
+  const [form, setForm] = useState<FormState>({
+    category: null,
+    file: null,
+    previewUrl: null,
+    latitude: null,
+    longitude: null,
+    address: "",
+    title: "",
+    description: "",
+  });
+
+  function update(patch: Partial<FormState>) {
+    setForm((current) => ({ ...current, ...patch }));
   }
 
-  const handleCaptureLocation =
-    () => {
-      setError(null);
+  /** Validates the current step, returning true when it may be left. */
+  function validateStep(index: number): boolean {
+    const next: Record<string, string> = {};
 
-      setIsCapturingLocation(
-        true
-      );
+    if (index === 0 && !form.category) {
+      next.category = "Please choose the kind of issue you're reporting.";
+    }
 
-      if (
-        !navigator.geolocation
-      ) {
-        setError(
-          "Location services are not supported by this browser."
-        );
+    if (index === 1) {
+      if (form.latitude === null || form.longitude === null) {
+        next.location =
+          "We need the location. Use your current location, or tap the map to place a pin.";
+      }
+      if (form.address.trim().length < 5) {
+        next.address = "Please enter an address or nearby landmark.";
+      }
+    }
 
-        setIsCapturingLocation(
-          false
-        );
+    if (index === 2) {
+      if (form.title.trim().length < 5) {
+        next.title = "Please give the issue a short title (at least 5 characters).";
+      }
+      if (form.description.trim().length < DESCRIPTION_MIN) {
+        next.description = `Please add a little more detail (at least ${DESCRIPTION_MIN} characters).`;
+      }
+    }
 
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  }
+
+  function goNext() {
+    if (!validateStep(step)) return;
+    setStep((current) => Math.min(current + 1, STEPS.length - 1));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function goBack() {
+    setErrors({});
+    setStep((current) => Math.max(current - 1, 0));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleSubmit() {
+    // Re-validate every step: a user can reach review then edit back.
+    for (let index = 0; index < STEPS.length - 1; index += 1) {
+      if (!validateStep(index)) {
+        setStep(index);
         return;
       }
+    }
 
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const latitude =
-            position.coords.latitude;
-
-          const longitude =
-            position.coords.longitude;
-
-          /*
-           * ------------------------------------------------------
-           * SAVE GPS COORDINATES
-           * ------------------------------------------------------
-           */
-
-          form.setValue(
-            "location.latitude",
-            latitude,
-            {
-              shouldValidate: true,
-              shouldDirty: true,
-            }
-          );
-
-          form.setValue(
-            "location.longitude",
-            longitude,
-            {
-              shouldValidate: true,
-              shouldDirty: true,
-            }
-          );
-
-          /*
-           * ------------------------------------------------------
-           * REVERSE GEOCODING
-           * ------------------------------------------------------
-           *
-           * Convert:
-           *
-           * 17.563915
-           * 78.454832
-           *
-           * into:
-           *
-           * Hyderabad, Telangana, India
-           */
-
-          const locationName =
-            await reverseGeocodeLocation(
-              latitude,
-              longitude
-            );
-
-          if (
-            locationName
-          ) {
-            form.setValue(
-              "location.address",
-              locationName,
-              {
-                shouldValidate: true,
-                shouldDirty: true,
-              }
-            );
-          } else {
-            /*
-             * Fallback if the reverse-geocoding
-             * service is temporarily unavailable.
-             */
-
-            form.setValue(
-              "location.address",
-              `GPS: ${latitude.toFixed(
-                6
-              )}, ${longitude.toFixed(
-                6
-              )}`,
-              {
-                shouldValidate: true,
-                shouldDirty: true,
-              }
-            );
-          }
-
-          setIsCapturingLocation(
-            false
-          );
-        },
-
-        (geoError) => {
-          console.error(
-            "Geolocation error:",
-            geoError
-          );
-
-          let message =
-            "Unable to determine your current location.";
-
-          switch (
-          geoError.code
-          ) {
-            case geoError.PERMISSION_DENIED:
-              message =
-                "Location permission was denied. Please allow location access in your browser.";
-              break;
-
-            case geoError.POSITION_UNAVAILABLE:
-              message =
-                "Your current location is unavailable. Check your device location settings.";
-              break;
-
-            case geoError.TIMEOUT:
-              message =
-                "Location detection timed out. Please try again.";
-              break;
-          }
-
-          setError(
-            message
-          );
-
-          setIsCapturingLocation(
-            false
-          );
-        },
-
-        {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 0,
-        }
-      );
-    };
-
-
-  /*
-   * ==========================================================
-   * STEP 1 → STEP 2
-   * ==========================================================
-   */
-
-  const handleContinueToDetails =
-    async () => {
-
-      setError(null);
-
-
-      const addressValid =
-        await form.trigger(
-          "location.address"
-        );
-
-
-      if (!addressValid) {
-        return;
-      }
-
-
-      const latitude =
-        form.getValues(
-          "location.latitude"
-        );
-
-
-      const longitude =
-        form.getValues(
-          "location.longitude"
-        );
-
-
-      if (
-        latitude === 0 ||
-        longitude === 0
-      ) {
-
-        setError(
-          "Please capture your current location before continuing."
-        );
-
-        return;
-      }
-
-
-      setStep(2);
-    };
-
-
-  /*
-   * ==========================================================
-   * SUBMIT COMPLAINT
-   * ==========================================================
-   */
-
-  async function onSubmit(
-    values: ReportFormValues
-  ) {
-
-    setIsSubmitting(
-      true
-    );
-
-    setError(null);
-
-    setSuccess(false);
-
+    setIsSubmitting(true);
+    setSubmitError(null);
 
     try {
+      const complaint = await createComplaint({
+        title: form.title.trim(),
+        description: form.description.trim(),
+        // Stored as the DB enum; the AI service refines this and keeps
+        // its richer classification in ai_category.
+        category: toDatabaseCategory(form.category ?? "other"),
+        latitude: form.latitude,
+        longitude: form.longitude,
+        address: form.address.trim(),
+        wardId: null,
+      });
 
-      /*
-       * ------------------------------------------------------
-       * GPS VALIDATION
-       * ------------------------------------------------------
-       */
-
-      if (
-        values.location.latitude ===
-        0 ||
-        values.location.longitude ===
-        0
-      ) {
-
-        throw new Error(
-          "Please capture your current location before submitting the complaint."
-        );
-      }
-
-
-      /*
-       * ------------------------------------------------------
-       * CREATE COMPLAINT
-       * ------------------------------------------------------
-       */
-
-      const complaint =
-        await createComplaint({
-
-          title:
-            values.title.trim(),
-
-          description:
-            values.description.trim(),
-
-          /*
-           * AI will classify this later.
-           */
-
-          category:
-            "other",
-
-          latitude:
-            values.location.latitude,
-
-          longitude:
-            values.location.longitude,
-
-          address:
-            values.location.address.trim(),
-
-          wardId:
-            values.location.ward ??
-            null,
-        });
-
-
-      console.log(
-        "Complaint created:",
-        complaint
-      );
-
-
-      /*
-       * ------------------------------------------------------
-       * UPLOAD EVIDENCE
-       * ------------------------------------------------------
-       */
-
-      if (mediaFile) {
+      // Upload evidence if provided. A failed upload must not lose the
+      // report — it is already saved at this point.
+      if (form.file) {
+        setUploadProgress(40);
 
         try {
+          await uploadComplaintEvidence(complaint.id, form.file);
+          setUploadProgress(100);
+        } catch (uploadError) {
+          console.error("Evidence upload failed:", uploadError);
 
-          const uploadedMedia =
-            await uploadComplaintEvidence(
-              complaint.id,
-              mediaFile
-            );
+          setCreated(complaint);
+          setIsSubmitting(false);
+          setUploadProgress(null);
 
-
-          console.log(
-            "Evidence uploaded:",
-            uploadedMedia
-          );
-
-        } catch (
-        uploadError
-        ) {
-
-          console.error(
-            "Evidence upload failed:",
-            uploadError
-          );
-
-
-          setSuccess(
-            true
-          );
-
-
-          setError(
-            "Your complaint was submitted, but the photo could not be uploaded. You can add evidence later."
-          );
-
-
-          setIsSubmitting(
-            false
-          );
-
-
-          setTimeout(() => {
-
-            router.push(
-              `/citizen/complaints/${complaint.id}`
-            );
-
-          }, 1800);
-
-
+          toast.warning("Report submitted, but the photo didn't upload", {
+            description: "You can add evidence from the report page.",
+          });
           return;
         }
       }
 
+      if (form.previewUrl) URL.revokeObjectURL(form.previewUrl);
 
-      /*
-       * ------------------------------------------------------
-       * SUCCESS
-       * ------------------------------------------------------
-       */
+      setCreated(complaint);
+      setIsSubmitting(false);
+      setUploadProgress(null);
 
-      setSuccess(
-        true
+      toast.success("Report submitted", {
+        description: `Tracking ID ${complaint.complaint_number}`,
+      });
+    } catch (error) {
+      console.error("Failed to submit report:", error);
+
+      setSubmitError(
+        error instanceof Error && error.message
+          ? error.message
+          : "We couldn't submit your report. Please check your connection and try again."
       );
-
-
-      if (mediaPreview) {
-
-        URL.revokeObjectURL(
-          mediaPreview
-        );
-      }
-
-
-      setTimeout(() => {
-
-        router.push(
-          `/citizen/complaints/${complaint.id}?process=ai`
-        );
-
-      }, 800);
-
-    } catch (
-    submitError
-    ) {
-
-      console.error(
-        "Failed to submit report:",
-        submitError
-      );
-
-
-      setError(
-        submitError instanceof Error
-          ? submitError.message
-          : "Failed to submit the complaint. Please try again."
-      );
-
-
-      setIsSubmitting(
-        false
-      );
+      setIsSubmitting(false);
+      setUploadProgress(null);
     }
   }
 
+  /* ============================================================
+     CONFIRMATION
+     ============================================================ */
+  if (created) {
+    return (
+      <div className="mx-auto max-w-xl">
+        <div className="rounded-xl border bg-card p-6 text-center sm:p-10">
+          <span className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50">
+            <CheckCircle2 className="h-7 w-7 text-emerald-600" aria-hidden="true" />
+          </span>
 
-  /*
-   * ==========================================================
-   * WATCH LOCATION
-   * ==========================================================
-   */
+          <h1 className="text-balance text-2xl font-bold tracking-tight text-foreground">
+            Your report is in
+          </h1>
+          <p className="mx-auto mt-2.5 max-w-md text-sm leading-relaxed text-muted-foreground">
+            It will be categorised and routed to the responsible department. You
+            can follow every stage from your reports.
+          </p>
 
-  const latitude =
-    form.watch(
-      "location.latitude"
+          {/* Tracking ID — the single most useful thing to keep. */}
+          <div className="mt-7 rounded-lg border bg-muted/30 p-4">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Tracking ID
+            </p>
+            <div className="mt-1.5 flex items-center justify-center gap-1.5">
+              <p className="font-mono text-lg font-semibold text-foreground">
+                {created.complaint_number}
+              </p>
+              <CopyButton value={created.complaint_number} label="Tracking ID" />
+            </div>
+          </div>
+
+          <div className="mt-5 flex items-center justify-center gap-2">
+            <StatusBadge status={created.status} showIcon />
+          </div>
+
+          <div className="mt-8 flex flex-col gap-2.5 sm:flex-row sm:justify-center">
+            <Button asChild size="lg">
+              <Link href={`/citizen/complaints/${created.id}?process=ai`}>
+                Track this issue
+                <ArrowRight className="ml-1 h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="lg">
+              <Link href="/citizen/report">Report another</Link>
+            </Button>
+          </div>
+        </div>
+      </div>
     );
+  }
 
-  const longitude =
-    form.watch(
-      "location.longitude"
-    );
-
-
-  const hasLocation =
-    latitude !== 0 &&
-    longitude !== 0;
-
-
-  /*
-   * ==========================================================
-   * UI
-   * ==========================================================
-   */
+  /* ============================================================
+     WIZARD
+     ============================================================ */
+  const selectedCategory = COMPLAINT_CATEGORIES.find(
+    (c) => c.value === form.category
+  );
 
   return (
-
     <div className="mx-auto max-w-2xl">
-
       <PageHeader
-        title="Report an Issue"
-        description="Help us identify and fix problems in your area."
+        title="Report an issue"
+        description="Four quick steps. Everything you submit helps the right team arrive prepared."
+        backHref="/citizen"
+        backLabel="Dashboard"
       />
 
+      <StepIndicator steps={STEPS} current={step} className="mb-8" />
 
-      {/* ======================================================
-          ERROR
-      ======================================================= */}
-
-      {error && (
-
-        <Alert className="mb-6 border-destructive/20 bg-destructive/5 text-destructive">
-
-          <AlertDescription>
-            {error}
-          </AlertDescription>
-
+      {submitError && (
+        <Alert variant="destructive" className="mb-6" role="alert">
+          <AlertCircle className="h-4 w-4" aria-hidden="true" />
+          <AlertDescription>{submitError}</AlertDescription>
         </Alert>
       )}
 
+      {/* ---------- STEP 1: WHAT ---------- */}
+      {step === 0 && (
+        <section className="space-y-7" aria-labelledby="step-what">
+          <div>
+            <h2 id="step-what" className="text-lg font-semibold text-foreground">
+              What kind of issue is it?
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pick the closest match — this decides which department gets it.
+            </p>
 
-      {/* ======================================================
-          SUCCESS
-      ======================================================= */}
+            <div className="mt-4">
+              <CategoryPicker
+                value={form.category}
+                onChange={(value) => {
+                  update({ category: value });
+                  setErrors((e) => ({ ...e, category: "" }));
+                }}
+                disabled={isSubmitting}
+              />
+            </div>
 
-      {success && (
+            {errors.category && (
+              <p role="alert" className="mt-3 text-sm font-medium text-destructive">
+                {errors.category}
+              </p>
+            )}
+          </div>
 
-        <Alert className="mb-6 border-green-200 bg-green-50 text-green-700">
+          <Separator />
 
-          <CheckCircle2 className="h-4 w-4" />
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">
+              Add a photo{" "}
+              <span className="text-sm font-normal text-muted-foreground">
+                (recommended)
+              </span>
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Reports with a photo are easier to prioritise and verify.
+            </p>
 
-          <AlertDescription>
-            Complaint submitted successfully. Redirecting...
-          </AlertDescription>
-
-        </Alert>
+            <div className="mt-4">
+              <PhotoUpload
+                file={form.file}
+                previewUrl={form.previewUrl}
+                onSelect={(file, previewUrl) => update({ file, previewUrl })}
+                onClear={() => {
+                  if (form.previewUrl) URL.revokeObjectURL(form.previewUrl);
+                  update({ file: null, previewUrl: null });
+                }}
+                disabled={isSubmitting}
+              />
+            </div>
+          </div>
+        </section>
       )}
 
+      {/* ---------- STEP 2: WHERE ---------- */}
+      {step === 1 && (
+        <section className="space-y-4" aria-labelledby="step-where">
+          <div>
+            <h2 id="step-where" className="text-lg font-semibold text-foreground">
+              Where is it?
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Accurate location means the crew finds it first time.
+            </p>
+          </div>
 
-      {/* ======================================================
-          PROGRESS
-      ======================================================= */}
+          {errors.location && (
+            <Alert variant="destructive" role="alert">
+              <AlertCircle className="h-4 w-4" aria-hidden="true" />
+              <AlertDescription>{errors.location}</AlertDescription>
+            </Alert>
+          )}
 
-      <div className="mb-8">
+          <LocationPicker
+            latitude={form.latitude}
+            longitude={form.longitude}
+            address={form.address}
+            onLocationChange={({ latitude, longitude, address }) => {
+              update({
+                latitude,
+                longitude,
+                ...(address !== undefined ? { address } : {}),
+              });
+              setErrors((e) => ({ ...e, location: "", address: "" }));
+            }}
+            onAddressChange={(address) => {
+              update({ address });
+              setErrors((e) => ({ ...e, address: "" }));
+            }}
+            disabled={isSubmitting}
+            error={errors.address}
+          />
+        </section>
+      )}
 
-        <div className="mb-2 flex items-center justify-between text-sm font-medium">
+      {/* ---------- STEP 3: DETAILS ---------- */}
+      {step === 2 && (
+        <section className="space-y-6" aria-labelledby="step-details">
+          <div>
+            <h2 id="step-details" className="text-lg font-semibold text-foreground">
+              Describe the issue
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              A clear description helps the team bring the right equipment.
+            </p>
+          </div>
 
-          <span
-            className={
-              step === 1
-                ? "text-primary"
-                : "text-muted-foreground"
-            }
+          <div>
+            <label
+              htmlFor="report-title"
+              className="mb-2 block text-sm font-medium text-foreground"
+            >
+              Title
+            </label>
+            <Input
+              id="report-title"
+              value={form.title}
+              maxLength={TITLE_MAX}
+              onChange={(event) => {
+                update({ title: event.target.value });
+                setErrors((e) => ({ ...e, title: "" }));
+              }}
+              placeholder="e.g. Deep pothole outside the school gate"
+              disabled={isSubmitting}
+              aria-invalid={Boolean(errors.title)}
+              aria-describedby={errors.title ? "report-title-error" : undefined}
+              className="h-11"
+            />
+            <div className="mt-2 flex items-start justify-between gap-3">
+              {errors.title ? (
+                <p
+                  id="report-title-error"
+                  role="alert"
+                  className="text-sm font-medium text-destructive"
+                >
+                  {errors.title}
+                </p>
+              ) : (
+                <span />
+              )}
+              <span className="tabular shrink-0 text-xs text-muted-foreground">
+                {form.title.length}/{TITLE_MAX}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="report-description"
+              className="mb-2 block text-sm font-medium text-foreground"
+            >
+              Description
+            </label>
+            <Textarea
+              id="report-description"
+              value={form.description}
+              maxLength={DESCRIPTION_MAX}
+              onChange={(event) => {
+                update({ description: event.target.value });
+                setErrors((e) => ({ ...e, description: "" }));
+              }}
+              placeholder="What is wrong, how bad is it, and is anyone at risk? Mention anything that would help the crew prepare."
+              disabled={isSubmitting}
+              aria-invalid={Boolean(errors.description)}
+              aria-describedby={
+                errors.description ? "report-description-error" : undefined
+              }
+              className="min-h-36 resize-y"
+            />
+            <div className="mt-2 flex items-start justify-between gap-3">
+              {errors.description ? (
+                <p
+                  id="report-description-error"
+                  role="alert"
+                  className="text-sm font-medium text-destructive"
+                >
+                  {errors.description}
+                </p>
+              ) : (
+                <span className="text-xs text-muted-foreground">
+                  Mention any safety risk first.
+                </span>
+              )}
+              <span className="tabular shrink-0 text-xs text-muted-foreground">
+                {form.description.length}/{DESCRIPTION_MAX}
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ---------- STEP 4: REVIEW ---------- */}
+      {step === 3 && (
+        <section className="space-y-5" aria-labelledby="step-review">
+          <div>
+            <h2 id="step-review" className="text-lg font-semibold text-foreground">
+              Check before you send
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              You can still go back and change anything.
+            </p>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border bg-card">
+            {form.previewUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={form.previewUrl}
+                alt="The photo attached to this report"
+                className="max-h-64 w-full bg-neutral-900 object-contain"
+              />
+            )}
+
+            <dl className="divide-y">
+              <ReviewRow
+                label="Category"
+                value={selectedCategory?.label ?? formatCategory(form.category)}
+                onEdit={() => setStep(0)}
+              />
+              <ReviewRow
+                label="Location"
+                value={form.address}
+                secondary={
+                  form.latitude !== null && form.longitude !== null
+                    ? `${form.latitude.toFixed(6)}, ${form.longitude.toFixed(6)}`
+                    : undefined
+                }
+                onEdit={() => setStep(1)}
+              />
+              <ReviewRow
+                label="Title"
+                value={form.title}
+                onEdit={() => setStep(2)}
+              />
+              <ReviewRow
+                label="Description"
+                value={form.description}
+                onEdit={() => setStep(2)}
+              />
+              <ReviewRow
+                label="Photo"
+                value={form.file ? form.file.name : "No photo attached"}
+                muted={!form.file}
+                onEdit={() => setStep(0)}
+              />
+            </dl>
+          </div>
+
+          {form.file && uploadProgress !== null && (
+            <PhotoUpload
+              file={form.file}
+              previewUrl={form.previewUrl}
+              onSelect={() => undefined}
+              onClear={() => undefined}
+              disabled
+              progress={uploadProgress}
+            />
+          )}
+        </section>
+      )}
+
+      {/* ---------- NAVIGATION ---------- */}
+      <div className="mt-9 flex flex-col-reverse gap-3 border-t pt-6 sm:flex-row sm:justify-between">
+        {step > 0 ? (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={goBack}
+            disabled={isSubmitting}
           >
-            Step 1: Evidence
-          </span>
+            <ArrowLeft className="mr-1 h-4 w-4" aria-hidden="true" />
+            Back
+          </Button>
+        ) : (
+          <Button type="button" variant="ghost" asChild>
+            <Link href="/citizen">Cancel</Link>
+          </Button>
+        )}
 
-
-          <span
-            className={
-              step === 2
-                ? "text-primary"
-                : "text-muted-foreground"
-            }
+        {step < STEPS.length - 1 ? (
+          <Button type="button" onClick={goNext} size="lg">
+            Continue
+            <ArrowRight className="ml-1 h-4 w-4" aria-hidden="true" />
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            onClick={handleSubmit}
+            disabled={isSubmitting}
+            size="lg"
+            className="sm:min-w-44"
           >
-            Step 2: Details
-          </span>
-
-        </div>
-
-
-        <Progress
-          value={
-            step === 1
-              ? 50
-              : 100
-          }
-          className="h-2"
-        />
-
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
+                Submitting…
+              </>
+            ) : (
+              <>
+                <Send className="mr-1 h-4 w-4" aria-hidden="true" />
+                Submit report
+              </>
+            )}
+          </Button>
+        )}
       </div>
+    </div>
+  );
+}
 
-
-      <Form {...form}>
-
-        <form
-          onSubmit={form.handleSubmit(
-            onSubmit
-          )}
+/** One row of the review summary, with a jump-back edit link. */
+function ReviewRow({
+  label,
+  value,
+  secondary,
+  muted,
+  onEdit,
+}: {
+  label: string;
+  value: string;
+  secondary?: string;
+  muted?: boolean;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="flex items-start gap-4 p-4">
+      <dt className="w-24 shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </dt>
+      <dd className="min-w-0 flex-1">
+        <p
+          className={
+            muted
+              ? "text-sm italic text-muted-foreground"
+              : "whitespace-pre-wrap break-words text-sm text-foreground"
+          }
         >
-
-
-          {/* ==================================================
-              STEP 1
-          ================================================== */}
-
-          {step === 1 && (
-
-            <div className="animate-in space-y-6 fade-in slide-in-from-right-4 duration-300">
-
-
-              {/* ==================================================
-                  EVIDENCE
-              ================================================== */}
-
-              <Card>
-
-                <CardContent className="pt-6">
-
-                  <div className="space-y-4">
-
-                    <div>
-
-                      <h3 className="text-lg font-medium">
-                        Upload Evidence
-                      </h3>
-
-                      <p className="mb-4 text-sm text-muted-foreground">
-                        Add a clear photo of the civic issue.
-                      </p>
-
-
-                      {/* =========================================
-                          REAL FILE INPUT
-                      ========================================= */}
-
-                      <input
-                        ref={
-                          fileInputRef
-                        }
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*"
-                        capture="environment"
-                        onChange={
-                          handlePhotoUpload
-                        }
-                        disabled={
-                          isSubmitting
-                        }
-                        className="sr-only"
-                        aria-label="Upload evidence image"
-                      />
-
-
-                      {/* =========================================
-                          NO PHOTO
-                      ========================================= */}
-
-                      {!mediaPreview ? (
-
-                        <div className="rounded-xl border-2 border-dashed border-border bg-muted/20 p-6">
-
-                          <div className="flex flex-col items-center text-center">
-
-                            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-
-                              <Camera className="h-7 w-7" />
-
-                            </div>
-
-
-                            <h4 className="font-semibold">
-                              Add a photo
-                            </h4>
-
-
-                            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                              Take a photo with your camera or choose an image from your device.
-                            </p>
-
-
-                            <div className="mt-5 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
-
-                              {/* =================================
-                                  MAIN UPLOAD BUTTON
-                              ================================= */}
-
-                              <Button
-                                type="button"
-                                onClick={
-                                  openFilePicker
-                                }
-                                disabled={
-                                  isSubmitting
-                                }
-                                className="w-full sm:w-auto"
-                              >
-
-                                <ImagePlus className="mr-2 h-4 w-4" />
-
-                                Upload Image
-
-                              </Button>
-
-
-                              {/* =================================
-                                  CAMERA BUTTON
-                              ================================= */}
-
-                              <Button
-                                type="button"
-                                variant="outline"
-                                onClick={
-                                  openFilePicker
-                                }
-                                disabled={
-                                  isSubmitting
-                                }
-                                className="w-full sm:w-auto"
-                              >
-
-                                <Camera className="mr-2 h-4 w-4" />
-
-                                Take Photo
-
-                              </Button>
-
-                            </div>
-
-
-                            <p className="mt-4 text-xs text-muted-foreground">
-                              Maximum 10 MB · JPG, PNG, WEBP, HEIC, HEIF
-                            </p>
-
-                          </div>
-
-                        </div>
-
-                      ) : (
-
-                        /* =======================================
-                           PHOTO PREVIEW
-                        ======================================= */
-
-                        <div className="overflow-hidden rounded-xl border">
-
-                          <div className="relative">
-
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-
-                            <img
-                              src={
-                                mediaPreview
-                              }
-                              alt="Civic issue evidence preview"
-                              className="h-72 w-full object-cover"
-                            />
-
-
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="sm"
-                              className="absolute right-3 top-3 shadow-md"
-                              onClick={
-                                handleRemovePhoto
-                              }
-                              disabled={
-                                isSubmitting
-                              }
-                            >
-
-                              <X className="mr-2 h-4 w-4" />
-
-                              Change Photo
-
-                            </Button>
-
-                          </div>
-
-
-                          {/* ===================================
-                              FILE INFORMATION
-                          =================================== */}
-
-                          <div className="flex flex-col gap-2 bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
-
-                            <div className="min-w-0">
-
-                              <p className="truncate text-sm font-medium">
-                                {mediaFile?.name ||
-                                  "Selected image"}
-                              </p>
-
-                              <p className="text-xs text-muted-foreground">
-
-                                {mediaFile
-                                  ? `${(
-                                    mediaFile.size /
-                                    1024 /
-                                    1024
-                                  ).toFixed(
-                                    2
-                                  )} MB`
-                                  : ""}
-
-                              </p>
-
-                            </div>
-
-
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={
-                                openFilePicker
-                              }
-                              disabled={
-                                isSubmitting
-                              }
-                            >
-
-                              <ImagePlus className="mr-2 h-4 w-4" />
-
-                              Choose Another
-
-                            </Button>
-
-                          </div>
-
-                        </div>
-                      )}
-
-                    </div>
-
-                  </div>
-
-                </CardContent>
-
-              </Card>
-
-
-              {/* ==================================================
-                  LOCATION
-              ================================================== */}
-
-              <Card>
-
-                <CardContent className="pt-6">
-
-                  <FormField
-                    control={
-                      form.control
-                    }
-                    name="location.address"
-                    render={({
-                      field,
-                    }) => (
-
-                      <FormItem>
-
-                        <FormLabel>
-                          Location
-                        </FormLabel>
-
-
-                        <div className="flex gap-2">
-
-                          <FormControl>
-
-                            <Input
-                              placeholder="Enter address or detect your current location"
-                              disabled={
-                                isSubmitting
-                              }
-                              {...field}
-                            />
-
-                          </FormControl>
-
-
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={
-                              handleCaptureLocation
-                            }
-                            disabled={
-                              isCapturingLocation ||
-                              isSubmitting
-                            }
-                            title="Use my current location"
-                          >
-
-                            {isCapturingLocation ? (
-
-                              <Loader2 className="h-4 w-4 animate-spin" />
-
-                            ) : (
-
-                              <LocateFixed className="h-4 w-4 text-primary" />
-
-                            )}
-
-                          </Button>
-
-                        </div>
-
-
-                        <FormMessage />
-
-                      </FormItem>
-
-                    )}
-                  />
-
-
-                  {/* =========================================
-                      GPS STATUS
-                  ========================================= */}
-
-                  <div className="mt-4">
-
-                    {hasLocation ? (
-
-                      <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-
-                        <div className="flex items-start gap-3">
-
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-green-100">
-
-                            <Navigation className="h-4 w-4 text-green-600" />
-
-                          </div>
-
-
-                          <div>
-
-                            <p className="text-sm font-semibold text-green-800">
-                              Location captured
-                            </p>
-
-
-                            <p className="mt-1 text-xs text-green-700">
-                              Latitude:{" "}
-                              {latitude.toFixed(
-                                6
-                              )}
-                            </p>
-
-
-                            <p className="text-xs text-green-700">
-                              Longitude:{" "}
-                              {longitude.toFixed(
-                                6
-                              )}
-                            </p>
-
-                          </div>
-
-                        </div>
-
-                      </div>
-
-                    ) : (
-
-                      <div className="rounded-lg border bg-muted/30 p-4">
-
-                        <div className="flex items-start gap-3">
-
-                          <MapPin className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-
-                          <div>
-
-                            <p className="text-sm font-medium">
-                              Location not captured
-                            </p>
-
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              Tap the location button to capture your current GPS coordinates.
-                            </p>
-
-                          </div>
-
-                        </div>
-
-                      </div>
-                    )}
-
-                  </div>
-
-
-                  {/* =========================================
-                      MAP / LOCATION PREVIEW
-                  ========================================= */}
-
-                  <div className="relative mt-4 flex h-48 items-center justify-center overflow-hidden rounded-md border bg-muted">
-
-                    {hasLocation ? (
-
-                      <div className="flex flex-col items-center text-center">
-
-                        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-
-                          <MapPin className="h-6 w-6" />
-
-                        </div>
-
-                        <p className="text-sm font-medium">
-                          GPS location captured
-                        </p>
-
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {latitude.toFixed(
-                            6
-                          )},{" "}
-                          {longitude.toFixed(
-                            6
-                          )}
-                        </p>
-
-                      </div>
-
-                    ) : (
-
-                      <div className="flex flex-col items-center text-center text-muted-foreground">
-
-                        <MapPin className="mb-2 h-8 w-8" />
-
-                        <p className="text-sm">
-                          Location preview
-                        </p>
-
-                      </div>
-
-                    )}
-
-                  </div>
-
-                </CardContent>
-
-              </Card>
-
-
-              {/* ==================================================
-                  CONTINUE
-              ================================================== */}
-
-              <div className="flex justify-end">
-
-                <Button
-                  type="button"
-                  onClick={
-                    handleContinueToDetails
-                  }
-                  disabled={
-                    isSubmitting
-                  }
-                >
-
-                  Continue
-
-                  <ArrowRight className="ml-2 h-4 w-4" />
-
-                </Button>
-
-              </div>
-
-            </div>
-          )}
-
-
-          {/* ==================================================
-              STEP 2
-          ================================================== */}
-
-          {step === 2 && (
-
-            <div className="animate-in space-y-6 fade-in slide-in-from-right-4 duration-300">
-
-              <Card>
-
-                <CardContent className="space-y-6 pt-6">
-
-                  {/* =========================================
-                      TITLE
-                  ========================================= */}
-
-                  <FormField
-                    control={
-                      form.control
-                    }
-                    name="title"
-                    render={({
-                      field,
-                    }) => (
-
-                      <FormItem>
-
-                        <FormLabel>
-                          Issue Title
-                        </FormLabel>
-
-                        <FormControl>
-
-                          <Input
-                            placeholder="e.g. Large pothole near main road"
-                            disabled={
-                              isSubmitting
-                            }
-                            {...field}
-                          />
-
-                        </FormControl>
-
-                        <FormMessage />
-
-                      </FormItem>
-                    )}
-                  />
-
-
-                  {/* =========================================
-                      DESCRIPTION
-                  ========================================= */}
-
-                  <FormField
-                    control={
-                      form.control
-                    }
-                    name="description"
-                    render={({
-                      field,
-                    }) => (
-
-                      <FormItem>
-
-                        <FormLabel>
-                          Describe the Issue
-                        </FormLabel>
-
-                        <FormControl>
-
-                          <Textarea
-                            placeholder="Describe what is happening, how serious it is, and any details that may help the authorities."
-                            className="min-h-36 resize-none"
-                            disabled={
-                              isSubmitting
-                            }
-                            {...field}
-                          />
-
-                        </FormControl>
-
-                        <FormMessage />
-
-                      </FormItem>
-                    )}
-                  />
-
-
-                  {/* =========================================
-                      ATTACHMENT SUMMARY
-                  ========================================= */}
-
-                  {mediaFile && (
-
-                    <div className="rounded-lg border bg-muted/30 p-4">
-
-                      <div className="flex items-center gap-3">
-
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-
-                          <ImagePlus className="h-5 w-5" />
-
-                        </div>
-
-
-                        <div className="min-w-0">
-
-                          <p className="truncate text-sm font-medium">
-                            {mediaFile.name}
-                          </p>
-
-                          <p className="text-xs text-muted-foreground">
-
-                            {(
-                              mediaFile.size /
-                              1024 /
-                              1024
-                            ).toFixed(
-                              2
-                            )}{" "}
-                            MB
-
-                          </p>
-
-                        </div>
-
-                      </div>
-
-                    </div>
-                  )}
-
-                </CardContent>
-
-              </Card>
-
-
-              {/* ==================================================
-                  ACTIONS
-              ================================================== */}
-
-              <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    setStep(1)
-                  }
-                  disabled={
-                    isSubmitting
-                  }
-                >
-                  Back
-                </Button>
-
-
-                <Button
-                  type="submit"
-                  disabled={
-                    isSubmitting
-                  }
-                  className="sm:min-w-40"
-                >
-
-                  {isSubmitting ? (
-
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-
-                      Submitting...
-                    </>
-
-                  ) : (
-
-                    <>
-                      <CheckCircle2 className="mr-2 h-4 w-4" />
-
-                      Submit Complaint
-                    </>
-
-                  )}
-
-                </Button>
-
-              </div>
-
-            </div>
-          )}
-
-        </form>
-
-      </Form>
-
+          {value || "—"}
+        </p>
+        {secondary && (
+          <p className="tabular mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <MapPin className="h-3 w-3" aria-hidden="true" />
+            {secondary}
+          </p>
+        )}
+      </dd>
+      <button
+        type="button"
+        onClick={onEdit}
+        className="shrink-0 rounded text-xs font-semibold text-primary transition-colors hover:text-primary-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Edit
+      </button>
     </div>
   );
 }

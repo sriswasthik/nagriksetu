@@ -16,17 +16,24 @@ const buttonVariants = cva(
   ].join(" "),
   {
     variants: {
+      /*
+       * Merge of both branches: the hover *colors* come from the
+       * CityTrace ramps (primary-700 / secondary-700 — a deliberate
+       * darker step rather than an opacity fade, so the shade stays
+       * on-brand), while the lift + shadow + active-press polish is
+       * kept from main.
+       */
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
+          "bg-primary text-primary-foreground shadow-sm hover:bg-primary-700 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
         destructive:
           "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
         outline:
-          "border border-border bg-card text-foreground hover:bg-accent hover:text-accent-foreground hover:border-primary/40 shadow-xs hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
+          "border border-border bg-card text-foreground shadow-xs hover:bg-accent hover:text-accent-foreground hover:border-primary/40 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
         secondary:
-          "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/90 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
+          "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary-700 hover:shadow-md hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]",
         ghost:
-          "text-foreground hover:bg-muted hover:text-foreground active:scale-[0.98]",
+          "text-foreground hover:bg-accent hover:text-accent-foreground active:scale-[0.98]",
         link:
           "text-primary underline-offset-4 hover:underline p-0 h-auto font-medium",
       },

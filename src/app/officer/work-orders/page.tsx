@@ -1,628 +1,271 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { Calendar, CheckCircle2, MapPin, Search, X } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
+import { PriorityBadge } from "@/components/shared/PriorityBadge";
+import { SLAIndicator } from "@/components/shared/SLAIndicator";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
+import { FilterChips, type FilterOption } from "@/components/shared/FilterChips";
+import { IssueListSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-
 import { workOrderService } from "@/lib/services/workOrders";
 import { authService } from "@/lib/services/auth";
-
 import type { WorkOrder } from "@/types/workOrder";
 
-import { PriorityBadge } from "@/components/shared/PriorityBadge";
-import { Search, Filter, MapPin, Clock, Calendar, CheckCircle2, RefreshCw, Loader2, AlertCircle, ArrowRight } from "lucide-react";
+/**
+ * Status filters live here rather than in the sidebar: they filter
+ * this list, and putting them in navigation would both mislead and
+ * force the whole app out of static prerendering.
+ */
+type FilterKey = "active" | "new" | "in_progress" | "review" | "done" | "all";
+
+const MATCHERS: Record<FilterKey, (wo: WorkOrder) => boolean> = {
+  active: (wo) => ["assigned", "accepted", "in_progress"].includes(wo.status),
+  new: (wo) => wo.status === "assigned",
+  in_progress: (wo) => wo.status === "in_progress",
+  review: (wo) => ["proof_submitted", "supervisor_review"].includes(wo.status),
+  done: (wo) => ["completed", "approved"].includes(wo.status),
+  all: () => true,
+};
 
 export default function OfficerWorkOrdersList() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
   const [error, setError] = useState<string | null>(null);
-
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("active");
-  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [filter, setFilter] = useState<FilterKey>("active");
 
-  async function loadData(refresh = false) {
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
     try {
-      setError(null);
-
-      if (refresh) {
-        setIsRefreshing(true);
-      } else {
-        setIsLoading(true);
-      }
-
-      const user = await authService.getCurrentUser();
-
-      if (!user) {
-        setError("Unable to identify the current officer.");
-        return;
-      }
-
-      const data = await workOrderService.getWorkOrders({
-        officerId: user.id,
-      });
-
-      setWorkOrders(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("Failed to load work orders:", err);
-      setError("Unable to load your work orders. Please try again.");
+      const user = await authService.getCurrentUser().catch(() => null);
+      const data = await workOrderService.getWorkOrders({ officerId: user?.id });
+      setWorkOrders(data);
+    } catch (loadError) {
+      console.error("Failed to load work orders", loadError);
+      setError("We couldn't load your work orders. Please try again.");
     } finally {
       setIsLoading(false);
-      setIsRefreshing(false);
     }
-  }
-
-  useEffect(() => {
-    loadData();
   }, []);
 
-  const filteredOrders = useMemo(() => {
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const counts = useMemo(
+    () => ({
+      active: workOrders.filter(MATCHERS.active).length,
+      new: workOrders.filter(MATCHERS.new).length,
+      in_progress: workOrders.filter(MATCHERS.in_progress).length,
+      review: workOrders.filter(MATCHERS.review).length,
+      done: workOrders.filter(MATCHERS.done).length,
+      all: workOrders.length,
+    }),
+    [workOrders]
+  );
+
+  const filterOptions: FilterOption<FilterKey>[] = [
+    { value: "active", label: "Active", count: counts.active },
+    { value: "new", label: "New", count: counts.new, tone: "attention" },
+    { value: "in_progress", label: "In progress", count: counts.in_progress },
+    { value: "review", label: "Awaiting verification", count: counts.review },
+    { value: "done", label: "Completed", count: counts.done },
+    { value: "all", label: "All", count: counts.all },
+  ];
+
+  const filtered = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
-    return [...workOrders]
-      .filter((order) => {
-        /* ---------------- SEARCH ---------------- */
+    return workOrders
+      .filter((wo) => {
+        if (!MATCHERS[filter](wo)) return false;
+        if (!query) return true;
 
-        const matchesSearch =
-          !query ||
-          order.complaintTitle?.toLowerCase().includes(query) ||
-          order.id?.toLowerCase().includes(query) ||
-          order.complaintId?.toLowerCase().includes(query) ||
-          order.location?.address?.toLowerCase().includes(query);
-
-        /* ---------------- STATUS ---------------- */
-
-        let matchesStatus = true;
-
-        if (statusFilter !== "all") {
-          if (statusFilter === "active") {
-            matchesStatus = [
-              "assigned",
-              "accepted",
-              "in_progress",
-            ].includes(order.status);
-          } else {
-            matchesStatus = order.status === statusFilter;
-          }
-        }
-
-        /* ---------------- PRIORITY ---------------- */
-
-        const matchesPriority =
-          priorityFilter === "all" ||
-          order.priorityLevel === priorityFilter;
-
-        return matchesSearch && matchesStatus && matchesPriority;
+        return [wo.complaintTitle, wo.id, wo.location.address, wo.complaintId]
+          .filter(Boolean)
+          .some((field) => String(field).toLowerCase().includes(query));
       })
       .sort((a, b) => {
-        /*
-         * Highest priority first.
-         * If priority is equal, the smallest SLA remaining
-         * comes first.
-         */
-        const priorityDifference =
-          (b.priorityScore || 0) - (a.priorityScore || 0);
-
-        if (priorityDifference !== 0) {
-          return priorityDifference;
-        }
-
-        return (
-          (a.slaHoursRemaining || 999999) -
-          (b.slaHoursRemaining || 999999)
-        );
+        // Urgency first: priority, then how close the SLA is.
+        const byPriority = b.priorityScore - a.priorityScore;
+        if (byPriority !== 0) return byPriority;
+        return a.slaHoursRemaining - b.slaHoursRemaining;
       });
-  }, [
-    workOrders,
-    searchQuery,
-    statusFilter,
-    priorityFilter,
-  ]);
+  }, [workOrders, filter, searchQuery]);
 
-  const activeCount = workOrders.filter((order) =>
-    ["assigned", "accepted", "in_progress"].includes(order.status)
-  ).length;
-
-  const urgentCount = workOrders.filter(
-    (order) =>
-      ["assigned", "accepted", "in_progress"].includes(order.status) &&
-      ["high", "critical"].includes(order.priorityLevel)
-  ).length;
-
-  const completedCount = workOrders.filter((order) =>
-    ["completed", "proof_submitted"].includes(order.status)
-  ).length;
-
-  const getStatusVariant = (
-    status: WorkOrder["status"]
-  ): "warning" | "info" | "success" | "default" => {
-    switch (status) {
-      case "assigned":
-        return "warning";
-
-      case "accepted":
-        return "info";
-
-      case "in_progress":
-        return "info";
-
-      case "proof_submitted":
-        return "success";
-
-      case "completed":
-        return "success";
-
-      default:
-        return "default";
-    }
-  };
-
-  const getActionLabel = (status: WorkOrder["status"]) => {
-    switch (status) {
-      case "assigned":
-        return "Review & Accept";
-
-      case "accepted":
-        return "Start Work";
-
-      case "in_progress":
-        return "Update Status";
-
-      case "proof_submitted":
-      case "completed":
-        return "View Details";
-
-      default:
-        return "Open Task";
-    }
-  };
-
-  const isActiveStatus = (status: WorkOrder["status"]) =>
-    ["assigned", "accepted", "in_progress"].includes(status);
-
-  const isSlaRisk = (order: WorkOrder) =>
-    isActiveStatus(order.status) &&
-    typeof order.slaHoursRemaining === "number" &&
-    order.slaHoursRemaining <= 4;
+  if (isLoading) {
+    return (
+      <div>
+        <PageHeaderSkeleton withAction={false} />
+        <IssueListSkeleton count={3} />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
+    <div>
       <PageHeader
-        title="My Work Orders"
-        description="Manage and update your assigned field tasks."
+        title="Work Orders"
+        description="Your assigned field tasks, most urgent first."
       />
 
-      {/* SUMMARY */}
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Card>
-          <CardContent className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Active
-              </p>
-
-              <p className="mt-1 text-2xl font-bold">
-                {isLoading ? "—" : activeCount}
-              </p>
-            </div>
-
-            <div className="rounded-lg bg-primary/10 p-2">
-              <Clock className="h-5 w-5 text-primary" />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-destructive/20">
-          <CardContent className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Urgent
-              </p>
-
-              <p className="mt-1 text-2xl font-bold text-destructive">
-                {isLoading ? "—" : urgentCount}
-              </p>
-            </div>
-
-            <div className="rounded-lg bg-destructive/10 p-2">
-              <AlertCircle className="h-5 w-5 text-destructive" />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-emerald-200">
-          <CardContent className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-sm text-muted-foreground">
-                Completed
-              </p>
-
-              <p className="mt-1 text-2xl font-bold text-emerald-700">
-                {isLoading ? "—" : completedCount}
-              </p>
-            </div>
-
-            <div className="rounded-lg bg-emerald-50 p-2">
-              <CheckCircle2 className="h-5 w-5 text-emerald-600" />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* FILTER BAR */}
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex flex-col gap-3 lg:flex-row">
-            {/* Search */}
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-
-              <Input
-                placeholder="Search by WO ID, complaint, or location..."
-                className="h-10 pl-9"
-                value={searchQuery}
-                onChange={(event) =>
-                  setSearchQuery(event.target.value)
-                }
-              />
-            </div>
-
-            {/* Status */}
-            <div className="flex items-center gap-2 lg:w-52">
-              <Filter className="hidden h-4 w-4 shrink-0 text-muted-foreground sm:block" />
-
-              <Select
-                value={statusFilter}
-                onValueChange={setStatusFilter}
-              >
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-
-                <SelectContent>
-                  <SelectItem value="active">
-                    Active Tasks
-                  </SelectItem>
-
-                  <SelectItem value="all">
-                    All Tasks
-                  </SelectItem>
-
-                  <SelectItem value="assigned">
-                    New Assignments
-                  </SelectItem>
-
-                  <SelectItem value="accepted">
-                    Accepted
-                  </SelectItem>
-
-                  <SelectItem value="in_progress">
-                    In Progress
-                  </SelectItem>
-
-                  <SelectItem value="proof_submitted">
-                    Proof Submitted
-                  </SelectItem>
-
-                  <SelectItem value="completed">
-                    Completed
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Priority */}
-            <div className="lg:w-44">
-              <Select
-                value={priorityFilter}
-                onValueChange={setPriorityFilter}
-              >
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="Priority" />
-                </SelectTrigger>
-
-                <SelectContent>
-                  <SelectItem value="all">
-                    All Priorities
-                  </SelectItem>
-
-                  <SelectItem value="critical">
-                    Critical
-                  </SelectItem>
-
-                  <SelectItem value="high">
-                    High
-                  </SelectItem>
-
-                  <SelectItem value="medium">
-                    Medium
-                  </SelectItem>
-
-                  <SelectItem value="low">
-                    Low
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Refresh */}
-            <Button
-              variant="outline"
-              className="h-10"
-              onClick={() => loadData(true)}
-              disabled={isRefreshing}
-            >
-              {isRefreshing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-2 h-4 w-4" />
-              )}
-
-              Refresh
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ERROR */}
       {error && (
-        <Card className="border-destructive/30 bg-destructive/5">
-          <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
-
-              <div>
-                <p className="font-semibold text-destructive">
-                  Unable to load work orders
-                </p>
-
-                <p className="text-sm text-muted-foreground">
-                  {error}
-                </p>
-              </div>
-            </div>
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => loadData(true)}
-            >
-              Retry
-            </Button>
-          </CardContent>
-        </Card>
+        <ErrorState
+          title="Unable to load work orders"
+          description={error}
+          onRetry={load}
+          className="mb-6"
+        />
       )}
 
-      {/* RESULT COUNT */}
-      {!isLoading && !error && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Showing{" "}
-            <span className="font-semibold text-foreground">
-              {filteredOrders.length}
-            </span>{" "}
-            of{" "}
-            <span className="font-semibold text-foreground">
-              {workOrders.length}
-            </span>{" "}
-            work orders
-          </p>
+      <DemoDataNotice className="mb-6" />
 
-          {(searchQuery ||
-            statusFilter !== "active" ||
-            priorityFilter !== "all") && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSearchQuery("");
-                setStatusFilter("active");
-                setPriorityFilter("all");
-              }}
+      {/* ---------- Search + filters ---------- */}
+      <div className="mb-6 space-y-4">
+        <div className="relative max-w-md">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search by work order ID, title or location…"
+            aria-label="Search work orders"
+            className="h-11 pl-10 pr-10"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              Clear filters
-            </Button>
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
           )}
         </div>
-      )}
 
-      {/* LOADING */}
-      {isLoading && (
-        <div className="space-y-4">
-          {[1, 2, 3].map((item) => (
-            <Card key={item} className="animate-pulse">
-              <CardContent className="p-6">
-                <div className="space-y-4">
-                  <div className="h-4 w-32 rounded bg-muted" />
-                  <div className="h-6 w-2/3 rounded bg-muted" />
-                  <div className="h-4 w-full rounded bg-muted" />
-                  <div className="h-4 w-1/2 rounded bg-muted" />
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+        <FilterChips
+          options={filterOptions}
+          value={filter}
+          onChange={setFilter}
+          label="Filter work orders by status"
+        />
+      </div>
 
-      {/* EMPTY */}
-      {!isLoading &&
-        !error &&
-        filteredOrders.length === 0 && (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="mb-4 rounded-full bg-muted p-4">
-                <CheckCircle2 className="h-10 w-10 text-muted-foreground" />
-              </div>
+      <p aria-live="polite" className="mb-4 text-sm text-muted-foreground">
+        {filtered.length} {filtered.length === 1 ? "work order" : "work orders"}
+      </p>
 
-              <h3 className="text-lg font-semibold">
-                No work orders found
-              </h3>
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={CheckCircle2}
+          title="Nothing here"
+          description="No work order matches this filter. Try another filter, or clear your search."
+          action={
+            <Button
+              variant="outline"
+              onClick={() => {
+                setFilter("all");
+                setSearchQuery("");
+              }}
+            >
+              Show all
+            </Button>
+          }
+        />
+      ) : (
+        <ul className="space-y-4">
+          {filtered.map((order) => {
+            const isClosed = ["completed", "approved"].includes(order.status);
 
-              <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                There are no work orders matching your current
-                search and filters.
-              </p>
-
-              <Button
-                variant="outline"
-                className="mt-5"
-                onClick={() => {
-                  setSearchQuery("");
-                  setStatusFilter("active");
-                  setPriorityFilter("all");
-                }}
-              >
-                Reset Filters
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-      {/* WORK ORDERS */}
-      {!isLoading &&
-        !error &&
-        filteredOrders.length > 0 && (
-          <div className="space-y-4">
-            {filteredOrders.map((order) => {
-              const slaRisk = isSlaRisk(order);
-
-              return (
-                <Card
-                  key={order.id}
-                  className={`group overflow-hidden transition-all hover:-translate-y-0.5 hover:shadow-md ${
-                    slaRisk
-                      ? "border-destructive/40"
-                      : "hover:border-primary/40"
-                  }`}
-                >
-                  <div className="flex flex-col lg:flex-row">
-                    {/* MAIN CONTENT */}
-                    <div className="min-w-0 flex-1 p-5 lg:p-6">
-                      {/* TOP ROW */}
-                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono text-xs font-semibold text-muted-foreground">
-                            {order.id}
-                          </span>
-
-                          <Badge
-                            variant={getStatusVariant(order.status)}
-                            className="capitalize"
-                          >
-                            {order.status.replace("_", " ")}
-                          </Badge>
-
-                          <PriorityBadge
-                            level={order.priorityLevel}
-                          />
-                        </div>
-
-                        {isActiveStatus(order.status) &&
-                          typeof order.slaHoursRemaining ===
-                            "number" && (
-                            <div
-                              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold ${
-                                slaRisk
-                                  ? "bg-destructive/10 text-destructive"
-                                  : "bg-amber-50 text-amber-700"
-                              }`}
-                            >
-                              <Clock className="h-3.5 w-3.5" />
-
-                              {slaRisk
-                                ? "SLA Risk"
-                                : `${order.slaHoursRemaining}h left`}
-                            </div>
-                          )}
+            return (
+              <li key={order.id}>
+                <article className="overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary/40">
+                  <div className="flex flex-col md:flex-row">
+                    <div className="min-w-0 flex-1 p-5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {order.id}
+                        </span>
+                        <Badge
+                          variant={order.status === "assigned" ? "warning" : "info"}
+                          className="capitalize"
+                        >
+                          {order.status.replace(/_/g, " ")}
+                        </Badge>
+                        <PriorityBadge
+                          level={order.priorityLevel}
+                          score={order.priorityScore}
+                        />
+                        {!isClosed && (
+                          <SLAIndicator hoursRemaining={order.slaHoursRemaining} />
+                        )}
                       </div>
 
-                      {/* TITLE */}
-                      <h3 className="text-lg font-bold tracking-tight">
-                        {order.complaintTitle}
-                      </h3>
+                      <h2 className="mt-3 text-base font-semibold leading-snug text-foreground sm:text-lg">
+                        <Link
+                          href={`/officer/work-orders/${order.id}`}
+                          className="rounded transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {order.complaintTitle}
+                        </Link>
+                      </h2>
 
-                      {/* LOCATION */}
-                      <div className="mt-2 flex items-start gap-2 text-sm text-muted-foreground">
-                        <MapPin className="mt-0.5 h-4 w-4 shrink-0" />
+                      <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
+                        <MapPin
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                        {order.location.address}
+                      </p>
 
-                        <span className="line-clamp-2">
-                          {order.location?.address ||
-                            "Location unavailable"}
+                      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" aria-hidden="true" />
+                          Assigned{" "}
+                          {new Date(order.assignedAt).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                          })}
+                        </span>
+                        <span>
+                          Report:{" "}
+                          <span className="font-mono">{order.complaintId}</span>
                         </span>
                       </div>
-
-                      {/* METADATA */}
-                      <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-                        <div className="flex items-center gap-1.5 text-muted-foreground">
-                          <Calendar className="h-4 w-4" />
-
-                          <span>
-                            Assigned:{" "}
-                            {order.assignedAt
-                              ? new Date(
-                                  order.assignedAt
-                                ).toLocaleDateString()
-                              : "—"}
-                          </span>
-                        </div>
-
-                        <div className="text-muted-foreground">
-                          Complaint:{" "}
-                          <span className="font-mono text-xs text-foreground">
-                            {order.complaintId}
-                          </span>
-                        </div>
-
-                        <div className="text-muted-foreground">
-                          Score:{" "}
-                          <span className="font-semibold text-foreground">
-                            {order.priorityScore ?? "—"}
-                          </span>
-                        </div>
-                      </div>
                     </div>
 
-                    {/* ACTION PANEL */}
-                    <div className="flex items-center border-t bg-muted/20 p-5 lg:w-52 lg:border-l lg:border-t-0">
-                      <Link
-                        href={`/officer/work-orders/${order.id}`}
-                        className="w-full"
-                      >
-                        <Button
-                          className="h-11 w-full"
-                          variant={
-                            order.status === "assigned"
-                              ? "default"
-                              : "outline"
-                          }
-                        >
-                          {getActionLabel(order.status)}
-
-                          <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-                        </Button>
-                      </Link>
+                    <div className="flex items-center border-t bg-muted/25 p-4 md:w-48 md:border-l md:border-t-0">
+                      <Button asChild className="w-full">
+                        <Link href={`/officer/work-orders/${order.id}`}>
+                          {order.status === "assigned"
+                            ? "Review & accept"
+                            : isClosed
+                              ? "View details"
+                              : "Update status"}
+                        </Link>
+                      </Button>
                     </div>
                   </div>
-                </Card>
-              );
-            })}
-          </div>
-        )}
+                </article>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

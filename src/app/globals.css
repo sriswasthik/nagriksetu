@@ -1,145 +1,234 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap");
 @import "tailwindcss";
+
+/*
+ * ================================================================
+ * CITYTRACE DESIGN FOUNDATION
+ * ================================================================
+ *
+ * Token layers:
+ *   1. Raw palette      — brand colors + derived neutral/tint ramps
+ *   2. Semantic tokens  — what components actually consume
+ *   3. Tailwind theme   — exposes both as utility classes
+ *
+ * Component files should keep using semantic classes
+ * (bg-card, text-muted-foreground, border, shadow-md, rounded-lg...).
+ * The ramps below exist so hover/active/subtle-background states
+ * have a real color to reach for instead of arbitrary hex values.
+ * ================================================================
+ */
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
+
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-border: var(--sidebar-border);
-  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+
+  /* Brand ramp — tints/shades of Primary Accent (#853953) for
+     hover/active/subtle-surface states beyond the base --primary. */
+  --color-primary-50: var(--primary-50);
+  --color-primary-100: var(--primary-100);
+  --color-primary-200: var(--primary-200);
+  --color-primary-300: var(--primary-300);
+  --color-primary-400: var(--primary-400);
+  --color-primary-500: var(--primary-500);
+  --color-primary-600: var(--primary-600);
+  --color-primary-700: var(--primary-700);
+  --color-primary-800: var(--primary-800);
+  --color-primary-900: var(--primary-900);
+
+  /* Brand ramp — tints/shades of Secondary Accent (#612D53). */
+  --color-secondary-50: var(--secondary-50);
+  --color-secondary-100: var(--secondary-100);
+  --color-secondary-200: var(--secondary-200);
+  --color-secondary-300: var(--secondary-300);
+  --color-secondary-400: var(--secondary-400);
+  --color-secondary-500: var(--secondary-500);
+  --color-secondary-600: var(--secondary-600);
+  --color-secondary-700: var(--secondary-700);
+  --color-secondary-800: var(--secondary-800);
+  --color-secondary-900: var(--secondary-900);
+
+  /* Neutral ramp — derived from Primary Dark (#2C2C2C) up to
+     Background (#F3F4F4). Backs borders, dividers, disabled
+     states and chart neutrals; independent of Tailwind's
+     built-in gray/slate/zinc so nothing existing collides. */
+  --color-neutral-50: var(--neutral-50);
+  --color-neutral-100: var(--neutral-100);
+  --color-neutral-200: var(--neutral-200);
+  --color-neutral-300: var(--neutral-300);
+  --color-neutral-400: var(--neutral-400);
+  --color-neutral-500: var(--neutral-500);
+  --color-neutral-600: var(--neutral-600);
+  --color-neutral-700: var(--neutral-700);
+  --color-neutral-800: var(--neutral-800);
+  --color-neutral-900: var(--neutral-900);
+  --color-neutral-950: var(--neutral-950);
+
+  /* Chart palette — cohesive ramp for data visualization,
+     built from the same brand + neutral tokens above. */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* Typography */
+  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Radius scale — one source of truth for rounded-sm/md/lg/xl
+     everywhere in the app. */
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
   --radius-2xl: 1.25rem;
+
+  /* Shadow scale — soft, brand-tinted elevation (Primary Dark at
+     low opacity instead of pure black) used by shadow-xs/sm/md/lg/xl. */
+  --shadow-xs: 0 1px 2px 0 rgb(44 44 44 / 0.05);
+  --shadow-sm: 0 1px 3px 0 rgb(44 44 44 / 0.08), 0 1px 2px -1px rgb(44 44 44 / 0.06);
+  --shadow-md: 0 4px 8px -2px rgb(44 44 44 / 0.10), 0 2px 4px -2px rgb(44 44 44 / 0.06);
+  --shadow-lg: 0 12px 20px -6px rgb(44 44 44 / 0.12), 0 4px 6px -4px rgb(44 44 44 / 0.08);
+  --shadow-xl: 0 20px 32px -8px rgb(44 44 44 / 0.16), 0 8px 12px -6px rgb(44 44 44 / 0.10);
 }
 
 :root {
-  /* ============================================================
-     CityTrace — Color Hunt Palette (#FED24F #FFF449 #B2D959 #7EC151)
-  ============================================================ */
+  /* ==============================================================
+     CITYTRACE BRAND PALETTE
+     ============================================================== */
 
-  --background: #FAFAFA;
-  --foreground: #09090B;
+  --background: #F3F4F4;
+  --foreground: #2C2C2C;
 
-  --primary: #09090B;
+  --primary: #853953;
   --primary-foreground: #FFFFFF;
-
-  --secondary: #27272A;
+  --secondary: #612D53;
   --secondary-foreground: #FFFFFF;
 
-  --muted: #F4F4F5;
-  --muted-foreground: #71717A;
-
-  --accent: #F4F4F5;
-  --accent-foreground: #09090B;
+  --muted: #E8E9E9;
+  --muted-foreground: #6B6B6B;
+  --accent: #F0E6EB;
+  --accent-foreground: #612D53;
 
   --card: #FFFFFF;
-  --card-foreground: #09090B;
-
+  --card-foreground: #2C2C2C;
   --popover: #FFFFFF;
-  --popover-foreground: #09090B;
+  --popover-foreground: #2C2C2C;
 
-  --border: #E4E4E7;
-  --input: #E4E4E7;
-  --ring: #09090B;
+  --border: #D4D5D5;
+  --input: #D4D5D5;
+  --ring: #853953;
 
-  --destructive: #E11D48;
+  --destructive: #B91C1C;
   --destructive-foreground: #FFFFFF;
 
-  /* Custom Color Hunt Palette Direct Tokens */
-  --ch-gold: #FED24F;
-  --ch-yellow: #FFF449;
-  --ch-lime: #B2D959;
-  --ch-green: #7EC151;
+  /* Sidebar (available for a dark-chrome treatment; the current
+     Sidebar/Navbar components render on --card, not these). */
+  --sidebar: #2C2C2C;
+  --sidebar-foreground: #E8E9E9;
+  --sidebar-accent: #853953;
+  --sidebar-border: #404040;
 
-  /* Sidebar */
-  --sidebar: #09090B;
-  --sidebar-foreground: #FAFAFA;
-  --sidebar-accent: #27272A;
-  --sidebar-border: #27272A;
+  /* --------------------------------------------------------------
+     PRIMARY RAMP — tints/shades of #853953
+     -------------------------------------------------------------- */
+  --primary-50: #FBF1F4;
+  --primary-100: #F5DEE6;
+  --primary-200: #EAC0CE;
+  --primary-300: #D998AC;
+  --primary-400: #C06D89;
+  --primary-500: #A24D6C;
+  --primary-600: #853953;
+  --primary-700: #6C2E43;
+  --primary-800: #562536;
+  --primary-900: #3F1B27;
 
-  /* Chart palette */
-  --chart-1: #7EC151;
-  --chart-2: #B2D959;
-  --chart-3: #FED24F;
-  --chart-4: #2563EB;
-  --chart-5: #0EA5E9;
+  /* --------------------------------------------------------------
+     SECONDARY RAMP — tints/shades of #612D53
+     -------------------------------------------------------------- */
+  --secondary-50: #F5EEF3;
+  --secondary-100: #E6D2DF;
+  --secondary-200: #CCA6BF;
+  --secondary-300: #AD7A9E;
+  --secondary-400: #8A5480;
+  --secondary-500: #713E67;
+  --secondary-600: #612D53;
+  --secondary-700: #4C2342;
+  --secondary-800: #391A32;
+  --secondary-900: #271222;
 
-  /* Elevation & 3D Layered Shadow Tokens */
-  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.04);
-  --shadow-sm: 0 2px 4px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 6px 16px -2px rgb(0 0 0 / 0.08), 0 2px 6px -2px rgb(0 0 0 / 0.04);
-  --shadow-lg: 0 16px 32px -4px rgb(0 0 0 / 0.12), 0 4px 12px -4px rgb(0 0 0 / 0.06);
-  --shadow-card: 0 4px 12px 0 rgb(0 0 0 / 0.05);
-  --shadow-card-hover: 0 20px 40px -6px rgb(0 0 0 / 0.15), 0 8px 16px -4px rgb(0 0 0 / 0.08);
-  --shadow-3d: 0 20px 35px -8px rgba(0, 0, 0, 0.15), 0 10px 15px -5px rgba(0, 0, 0, 0.1);
+  /* --------------------------------------------------------------
+     NEUTRAL RAMP — derived between Background (#F3F4F4) and
+     Primary Dark (#2C2C2C)
+     -------------------------------------------------------------- */
+  --neutral-50: #F9F9FA;
+  --neutral-100: #F3F4F4;
+  --neutral-200: #E8E9E9;
+  --neutral-300: #D4D5D5;
+  --neutral-400: #B5B6B7;
+  --neutral-500: #8F9091;
+  --neutral-600: #6B6B6B;
+  --neutral-700: #525253;
+  --neutral-800: #3D3D3E;
+  --neutral-900: #2C2C2C;
+  --neutral-950: #1C1C1D;
 
-  /* Transition tokens */
-  --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* --------------------------------------------------------------
+     CHART PALETTE
+     -------------------------------------------------------------- */
+  --chart-1: var(--primary-600);
+  --chart-2: var(--secondary-600);
+  --chart-3: var(--primary-300);
+  --chart-4: var(--neutral-700);
+  --chart-5: var(--secondary-300);
 }
 
-/* ============================================================
-   GLOBAL RESETS
-============================================================ */
-
-*, *::before, *::after {
+* {
   border-color: var(--border);
-  box-sizing: border-box;
-}
-
-html {
-  -webkit-text-size-adjust: 100%;
-  text-size-adjust: 100%;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-feature-settings: "cv11", "ss01";
 }
 
-/* ============================================================
-   FOCUS STYLES — accessible but refined
-============================================================ */
-
+/* Focus styles */
 :focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
-  border-radius: var(--radius-sm);
 }
 
-/* ============================================================
-   SCROLLBAR — subtle and brand-aligned
-============================================================ */
-
+/* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -150,197 +239,222 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #D4D4D8;
-  border-radius: 99px;
+  background: var(--muted);
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #71717A;
+  background: var(--muted-foreground);
 }
 
-/* ============================================================
-   SELECTION
-============================================================ */
-
-::selection {
-  background: rgba(0, 0, 0, 0.15);
-  color: #000;
+/*
+ * ================================================================
+ * LEAFLET
+ * ================================================================
+ * Themed to match the design system, and given a map-like substrate
+ * so a blocked/offline tile server degrades to something that still
+ * reads as a map rather than an empty grey box.
+ */
+.leaflet-container {
+  font-family: var(--font-sans);
+  background-color: var(--neutral-200);
+  background-image:
+    linear-gradient(to right, rgb(44 44 44 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(44 44 44 / 0.055) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
-/* ============================================================
-   ANIMATIONS & 3D KEYFRAMES
-============================================================ */
+/* Zoom / layer controls */
+.leaflet-control-zoom a,
+.leaflet-bar a {
+  border-color: var(--border) !important;
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
+  font-weight: 500;
+}
 
+.leaflet-control-zoom a:hover,
+.leaflet-bar a:hover {
+  background-color: var(--muted) !important;
+}
+
+.leaflet-bar {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm) !important;
+  overflow: hidden;
+}
+
+/* Keyboard focus must stay visible on map controls. */
+.leaflet-container a:focus-visible,
+.leaflet-container button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Attribution — required by OSM, kept legible but quiet. */
+.leaflet-control-attribution {
+  background-color: rgb(255 255 255 / 0.85) !important;
+  color: var(--muted-foreground) !important;
+  font-size: 0.6875rem !important;
+  backdrop-filter: blur(4px);
+}
+
+.leaflet-control-attribution a {
+  color: var(--primary) !important;
+}
+
+/* Popups */
+.leaflet-popup-content-wrapper {
+  border-radius: var(--radius-lg) !important;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg) !important;
+  padding: 0 !important;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  width: auto !important;
+  min-width: 15rem;
+}
+
+.leaflet-popup-tip {
+  border: 1px solid var(--border);
+}
+
+/* DivIcon markers must not carry Leaflet's default chrome. */
+.citytrace-marker {
+  background: transparent;
+  border: 0;
+}
+
+/* Animations */
 @keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fade-in-fast {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes slide-in-right {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
-@keyframes scale-in {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
-/* 3D Floating Animation */
-@keyframes float {
-  0%, 100% {
-    transform: translateY(0px) rotate(0deg);
-  }
-  50% {
-    transform: translateY(-10px) rotate(0.8deg);
-  }
+/* Map marker pulse — used by the live/critical issue markers. */
+@keyframes marker-ping {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
 }
 
-@keyframes float-slow {
-  0%, 100% {
-    transform: translateY(0px) rotate(0deg);
-  }
-  50% {
-    transform: translateY(-14px) rotate(-1.2deg);
-  }
-}
-
-/* Metallic Shimmer */
+/* Skeleton shimmer — richer than a flat opacity pulse. */
 @keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
+  100% { transform: translateX(100%); }
 }
 
-/* Glow Pulse */
-@keyframes glow-pulse {
-  0%, 100% {
-    box-shadow: 0 0 15px rgba(0, 0, 0, 0.1), 0 0 30px rgba(0, 0, 0, 0.05);
-  }
-  50% {
-    box-shadow: 0 0 25px rgba(0, 0, 0, 0.15), 0 0 45px rgba(0, 0, 0, 0.1);
-  }
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
 }
 
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1;   transform: scale(1); }
-  50%       { opacity: 0.6; transform: scale(0.85); }
+.animate-slide-in {
+  animation: slide-in-right 0.3s ease-out;
 }
 
-@keyframes spin-slow {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
 }
 
-/* ============================================================
-   ANIMATION & 3D UTILITIES
-============================================================ */
-
-.animate-fade-in        { animation: fade-in      0.3s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.animate-fade-in-fast   { animation: fade-in-fast 0.15s ease-out both; }
-.animate-slide-up       { animation: slide-up     0.4s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.animate-slide-in       { animation: slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.animate-scale-in       { animation: scale-in     0.25s cubic-bezier(0.16, 1, 0.3, 1) both; }
-.animate-float          { animation: float        4s ease-in-out infinite; }
-.animate-float-slow     { animation: float-slow   6s ease-in-out infinite; }
-.animate-glow-pulse     { animation: glow-pulse   3s ease-in-out infinite; }
-.animate-pulse-dot      { animation: pulse-dot    1.8s ease-in-out infinite; }
-.animate-spin-slow      { animation: spin-slow    8s linear infinite; }
-
-/* Stagger helpers */
-.stagger-1 { animation-delay: 0.05s; }
-.stagger-2 { animation-delay: 0.10s; }
-.stagger-3 { animation-delay: 0.15s; }
-.stagger-4 { animation-delay: 0.20s; }
-.stagger-5 { animation-delay: 0.25s; }
-
-/* ============================================================
-   3D & GLASSMORPHISM UTILITIES
-============================================================ */
-
-.perspective-1000 {
-  perspective: 1000px;
+/*
+ * ================================================================
+ * DATA & NUMERALS
+ * ================================================================
+ * Metrics, counters, IDs and table figures should not jitter as
+ * digits change. Applied to stat/counter components.
+ */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
 }
 
-.card-3d {
-  transform-style: preserve-3d;
-  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease;
+/*
+ * ================================================================
+ * CIVIC BACKDROPS
+ * ================================================================
+ * Low-contrast, map-inspired depth layers. Content must always
+ * stay dominant — these sit at low opacity behind it.
+ */
+
+/* Faint surveyor's grid, evoking a city plan / cadastral map. */
+.backdrop-grid {
+  background-image:
+    linear-gradient(to right, rgb(44 44 44 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(44 44 44 / 0.055) 1px, transparent 1px);
+  background-size: 64px 64px;
 }
 
-.card-3d:hover {
-  transform: translateY(-6px) rotateX(2deg) rotateY(-1deg);
-  box-shadow: var(--shadow-3d);
-  border-color: rgba(0, 0, 0, 0.2);
+.backdrop-grid-sm {
+  background-image:
+    linear-gradient(to right, rgb(44 44 44 / 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(44 44 44 / 0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
 }
 
-.glass-panel {
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(228, 228, 231, 0.9);
-  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.06);
+/* Same grid on dark surfaces (hero, sidebar chrome). */
+.backdrop-grid-invert {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.06) 1px, transparent 1px);
+  background-size: 64px 64px;
 }
 
-.glass-dark-panel {
-  background: rgba(9, 9, 11, 0.82);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 20px 40px -10px rgba(0, 0, 0, 0.4);
-}
-
-.shimmer-badge {
-  background: linear-gradient(
-    90deg,
-    rgba(254, 210, 79, 0.15) 0%,
-    rgba(255, 244, 73, 0.45) 50%,
-    rgba(254, 210, 79, 0.15) 100%
+/* Radial spotlight used to focus attention and fade grid edges. */
+.backdrop-radial {
+  background-image: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    rgb(133 57 83 / 0.16),
+    transparent 70%
   );
-  background-size: 200% 100%;
-  animation: shimmer 3s infinite linear;
 }
 
-/* ============================================================
-   REDUCED MOTION
-============================================================ */
+/* Masks a backdrop layer so it dissolves toward the edges instead
+   of ending on a hard line. */
+.mask-fade-edges {
+  mask-image: radial-gradient(ellipse 75% 75% at 50% 40%, #000 40%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 75% 75% at 50% 40%, #000 40%, transparent 100%);
+}
 
+.mask-fade-b {
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+
+/*
+ * ================================================================
+ * CSS 3D SCENE
+ * ================================================================
+ * Backs the isometric city visual. Pure CSS transforms — no WebGL
+ * runtime, no extra bundle weight.
+ */
+.scene-3d {
+  perspective: 1400px;
+  perspective-origin: 50% 40%;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+/*
+ * ================================================================
+ * REDUCED MOTION
+ * ================================================================
+ * Global guard. Framer Motion components additionally consult
+ * useReducedMotion() so they resolve to opacity-only or no
+ * transition rather than merely being sped up.
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -350,60 +464,10 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-}
 
-/* ============================================================
-   LEAFLET OVERRIDES
-============================================================ */
-
-.leaflet-container {
-  font-family: var(--font-sans);
-  border-radius: var(--radius-lg);
-}
-
-/* ============================================================
-   TYPOGRAPHY UTILITIES
-============================================================ */
-
-.text-balance {
-  text-wrap: balance;
-}
-
-.text-pretty {
-  text-wrap: pretty;
-}
-
-/* ============================================================
-   GRADIENT UTILITIES
-============================================================ */
-
-.gradient-primary {
-  background: linear-gradient(135deg, #18181b 0%, #000000 100%);
-}
-
-.gradient-gold {
-  background: linear-gradient(135deg, #FED24F 0%, #FFF449 100%);
-}
-
-.gradient-primary-soft {
-  background: linear-gradient(135deg,
-    rgba(0, 0, 0, 0.05) 0%,
-    rgba(0, 0, 0, 0.02) 100%
-  );
-}
-
-.gradient-dark-panel {
-  background: linear-gradient(135deg, #000000 0%, #09090b 50%, #18181b 100%);
-}
-
-/* ============================================================
-   STATUS DOT UTILITY
-============================================================ */
-
-.status-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
+  .animate-pulse-subtle,
+  .animate-fade-in,
+  .animate-slide-in {
+    animation: none !important;
+  }
 }

@@ -1,221 +1,332 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
+import {
+  ArrowRight,
+  BarChart3,
+  Camera,
+  CheckCircle2,
+  ClipboardCheck,
+  MapPin,
+  ScanSearch,
+  ShieldCheck,
+} from 'lucide-react';
+
 import { Button } from '@/components/ui/button';
-import { ShieldAlert, ArrowRight, Brain, MapPin, CheckCircle, BarChart, Zap, Users, Shield, Sparkles, AlertTriangle, Clock } from 'lucide-react';
-import { APP_NAME, APP_TAGLINE, APP_DESCRIPTION } from '@/lib/constants';
+import { Logo } from '@/components/shared/Logo';
+import { Container, Section, SectionHeading } from '@/components/layout/Container';
+import { IsometricCityLazy } from '@/components/visuals/IsometricCityLazy';
+import { Reveal, RevealGroup, RevealItem } from '@/components/shared/Reveal';
+import { APP_NAME, COMPLAINT_CATEGORIES } from '@/lib/constants';
+
+export const metadata: Metadata = {
+  title: 'Track Your City. Improve Your Community.',
+};
+
+/** How the platform works, end to end. */
+const WORKFLOW = [
+  {
+    icon: Camera,
+    title: 'Report',
+    body: 'Photograph the problem. Your location is captured automatically, so you never type an address.',
+  },
+  {
+    icon: ScanSearch,
+    title: 'Triage',
+    body: 'The report is categorised, prioritised and routed to the department responsible for that kind of work.',
+  },
+  {
+    icon: ClipboardCheck,
+    title: 'Resolve',
+    body: 'A field officer accepts the work order, completes it, and submits photographic proof of the fix.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Verify',
+    body: 'A supervisor checks the evidence before anything is marked resolved — and you can reopen it if it is not.',
+  },
+] as const;
+
+const CAPABILITIES = [
+  {
+    icon: MapPin,
+    title: 'Everything has a location',
+    body: 'Reports are anchored to GPS coordinates, so issues can be mapped, clustered and spotted as patterns rather than handled one by one.',
+  },
+  {
+    icon: CheckCircle2,
+    title: 'Nothing closes unverified',
+    body: 'Every resolution needs photographic proof and a supervisor sign-off. Closing a ticket and fixing a problem are not the same thing.',
+  },
+  {
+    icon: BarChart3,
+    title: 'Accountability by default',
+    body: 'Response times, resolution rates and departmental workload are measured against service-level targets, not estimated.',
+  },
+] as const;
 
 export default function LandingPage() {
   return (
-    <div className="flex min-h-screen flex-col bg-background selection:bg-primary/20">
-      {/* Public Navbar */}
-      <header className="sticky top-0 z-40 w-full border-b border-border/50 bg-card/90 backdrop-blur-lg text-card-foreground">
-        <div className="container mx-auto flex h-[60px] items-center justify-between px-4">
-          <Link href="/" className="group flex items-center">
-            <div className="flex items-center justify-center h-9 w-9 rounded-xl bg-primary text-primary-foreground mr-2.5 shadow-sm transition-transform duration-300 group-hover:rotate-6 group-hover:scale-110">
-              <ShieldAlert className="h-5 w-5" />
-            </div>
-            <span className="font-extrabold text-xl tracking-tight text-foreground transition-colors group-hover:text-primary">{APP_NAME}</span>
-          </Link>
-          <div className="flex items-center gap-3">
-            <Link href="/auth/login">
-              <Button variant="ghost" className="text-muted-foreground hover:text-foreground font-semibold">Log In</Button>
-            </Link>
-            <Link href="/auth/register">
-              <Button className="shadow-sm font-semibold">Get Started</Button>
-            </Link>
+    <div className="flex min-h-screen flex-col bg-background">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-primary-foreground focus:shadow-lg"
+      >
+        Skip to main content
+      </a>
+
+      {/* ================= HEADER ================= */}
+      <header className="sticky top-0 z-40 w-full border-b bg-card/90 backdrop-blur-md">
+        <Container width="wide">
+          <div className="flex h-16 items-center justify-between">
+            <Logo size="md" />
+
+            <nav aria-label="Account" className="flex items-center gap-2 sm:gap-3">
+              <Button variant="ghost" asChild>
+                <Link href="/auth/login">Log in</Link>
+              </Button>
+              <Button asChild>
+                <Link href="/auth/register">Get started</Link>
+              </Button>
+            </nav>
           </div>
-        </div>
+        </Container>
       </header>
 
-      <main className="flex-1">
-        {/* Hero Section with 3D Mockup */}
-        <section className="relative px-4 pt-24 pb-36 md:pt-32 md:pb-48 overflow-hidden">
-          {/* Background gradient */}
-          <div className="absolute inset-0 bg-gradient-to-br from-black via-zinc-900 to-zinc-800" />
-          {/* Glowing orbital background blurs */}
-          <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-white/5 blur-[120px] rounded-full pointer-events-none" />
-          <div className="absolute bottom-10 right-10 w-[350px] h-[350px] bg-zinc-400/10 blur-[100px] rounded-full pointer-events-none" />
+      <main id="main-content" className="flex-1">
+        {/* ================= HERO ================= */}
+        <section className="relative overflow-hidden border-b bg-neutral-900">
+          {/* Depth layers — city grid + brand spotlight, both low contrast */}
+          <div
+            aria-hidden="true"
+            className="backdrop-grid-invert mask-fade-edges absolute inset-0"
+          />
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 bg-[radial-gradient(ellipse_70%_60%_at_50%_0%,rgba(133,57,83,0.42),transparent_72%)]"
+          />
 
-          {/* Subtle pattern overlay */}
-          <div className="absolute inset-0 opacity-[0.06]" style={{
-            backgroundImage: `radial-gradient(circle at 1px 1px, rgba(254, 210, 79, 0.5) 1px, transparent 0)`,
-            backgroundSize: '28px 28px',
-          }} />
-          
-          {/* Bottom fade */}
-          <div className="absolute bottom-0 left-0 right-0 h-36 bg-gradient-to-t from-background to-transparent" />
+          <Container width="wide" className="relative">
+            <div className="grid items-center gap-12 py-20 md:py-28 lg:grid-cols-[1.05fr_0.95fr] lg:gap-8">
+              {/* ---- Copy ---- */}
+              <div className="max-w-2xl">
+                <Reveal>
+                  <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/80 backdrop-blur-sm">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    Civic issue reporting and resolution tracking
+                  </p>
+                </Reveal>
 
-          <div className="container relative mx-auto max-w-6xl z-10">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
-              
-              {/* Left Column: Hero Text */}
-              <div className="lg:col-span-7 text-center lg:text-left">
-                {/* 3D Shimmer Badge */}
-                <div className="inline-flex items-center gap-2 rounded-full border border-[#71717a]/40 bg-[#09090b]/80 backdrop-blur-md px-4 py-1.5 text-xs font-bold text-[white] shadow-lg mb-6 animate-fade-in">
-                  <Zap className="h-4 w-4 text-[white] animate-pulse" />
-                  <span>AI-POWERED CIVIC OPERATIONS</span>
-                  <span className="h-1.5 w-1.5 rounded-full bg-[white] animate-pulse-dot" />
-                </div>
+                <Reveal delay={0.06}>
+                  <h1 className="text-balance text-4xl font-bold leading-[1.08] tracking-tight text-white sm:text-5xl lg:text-6xl">
+                    Track your city.
+                    <br />
+                    <span className="text-primary-300">Improve your community.</span>
+                  </h1>
+                </Reveal>
 
-                <h1 className="mb-6 text-4xl font-extrabold tracking-tight text-white sm:text-5xl md:text-6xl text-balance leading-[1.1] animate-slide-up">
-                  {APP_TAGLINE}
-                </h1>
-                
-                <p className="mb-10 max-w-xl text-base text-white/85 sm:text-lg leading-relaxed animate-slide-up stagger-1">
-                  {APP_DESCRIPTION}
-                </p>
-                
-                <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4 animate-slide-up stagger-2">
-                  <Link href="/citizen/report" className="w-full sm:w-auto">
-                    <Button size="lg" className="h-13 px-8 text-base font-extrabold bg-[white] text-[black] hover:bg-[#f4f4f5] w-full shadow-lg transition-all duration-300 hover:scale-105 active:scale-95">
-                      Report an Issue
-                      <ArrowRight className="ml-2 h-5 w-5" />
+                <Reveal delay={0.12}>
+                  <p className="mt-6 max-w-xl text-lg leading-relaxed text-white/70">
+                    Report a pothole, a broken streetlight or an overflowing drain in
+                    under a minute. Follow it from submission to verified repair — and
+                    see what your city is fixing, street by street.
+                  </p>
+                </Reveal>
+
+                <Reveal delay={0.18}>
+                  <div className="mt-9 flex flex-col gap-3 sm:flex-row">
+                    <Button
+                      size="lg"
+                      asChild
+                      className="h-12 px-7 text-base shadow-lg shadow-primary-900/30"
+                    >
+                      <Link href="/citizen/report">
+                        Report an Issue
+                        <ArrowRight className="ml-1 h-4 w-4" />
+                      </Link>
                     </Button>
-                  </Link>
-                  <Link href="/government" className="w-full sm:w-auto">
-                    <Button size="lg" variant="outline" className="h-13 px-8 text-base font-semibold border-white/25 bg-white/10 hover:bg-white/20 text-white backdrop-blur-md w-full transition-all duration-300">
-                      Explore Governance
+
+                    <Button
+                      size="lg"
+                      variant="outline"
+                      asChild
+                      className="h-12 border-white/20 bg-white/5 px-7 text-base text-white backdrop-blur-sm hover:bg-white/10 hover:text-white"
+                    >
+                      <Link href="/citizen/map">Explore City Issues</Link>
                     </Button>
-                  </Link>
-                </div>
+                  </div>
+                </Reveal>
+
+                <Reveal delay={0.24}>
+                  <p className="mt-7 text-sm text-white/45">
+                    Free for residents. No app install required.
+                  </p>
+                </Reveal>
               </div>
 
-              {/* Right Column: 3D Floating Glassmorphism Preview Card */}
-              <div className="lg:col-span-5 flex justify-center perspective-1000">
-                <div className="w-full max-w-sm glass-dark-panel p-5 rounded-3xl animate-float-slow transition-all duration-500 hover:rotate-1 hover:scale-105">
-                  {/* Card Header */}
-                  <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-3 w-3 rounded-full bg-red-400" />
-                      <div className="h-3 w-3 rounded-full bg-amber-400" />
-                      <div className="h-3 w-3 rounded-full bg-emerald-400" />
-                    </div>
-                    <span className="text-[10px] font-mono text-[white] font-semibold tracking-wider uppercase bg-[white]/10 px-2 py-0.5 rounded-full border border-[white]/20">
-                      LIVE STREAM
+              {/* ---- 3D city (decorative, md+ only) ---- */}
+              <div className="hidden md:flex md:justify-center lg:justify-end">
+                <IsometricCityLazy className="w-full max-w-[420px]" />
+              </div>
+            </div>
+          </Container>
+        </section>
+
+        {/* ================= WORKFLOW ================= */}
+        <Section spacing="lg" className="relative overflow-hidden">
+          <div
+            aria-hidden="true"
+            className="backdrop-grid-sm mask-fade-b absolute inset-0 opacity-60"
+          />
+
+          <Container width="wide" className="relative">
+            <SectionHeading
+              eyebrow="How it works"
+              title="From a photo on the street to a verified repair"
+              description="Four stages, each with a clear owner. You can see which stage your report is at, at any time."
+            />
+
+            <RevealGroup className="mt-12 grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-4">
+              {WORKFLOW.map((step, index) => (
+                <RevealItem key={step.title} className="relative">
+                  {/* Connector between steps on wide screens */}
+                  {index < WORKFLOW.length - 1 && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-[3.25rem] top-5 hidden h-px w-[calc(100%-2.5rem)] bg-gradient-to-r from-border to-transparent lg:block"
+                    />
+                  )}
+
+                  <div className="relative mb-5 flex h-11 w-11 items-center justify-center rounded-xl border bg-card shadow-sm">
+                    <step.icon className="h-5 w-5 text-primary" aria-hidden="true" />
+                    <span className="tabular absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[0.625rem] font-bold text-primary-foreground">
+                      {index + 1}
                     </span>
                   </div>
 
-                  {/* Mock Image Box */}
-                  <div className="relative aspect-video rounded-2xl bg-gradient-to-br from-[#1E3B17] to-[#3C6E25] p-4 flex flex-col justify-between overflow-hidden mb-4 border border-white/10 group">
-                    <div className="flex items-center justify-between z-10">
-                      <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-[#09090b]/80 text-[#71717a] backdrop-blur-md px-2.5 py-1 rounded-full border border-[#71717a]/30">
-                        <MapPin className="h-3 w-3 text-[white]" />
-                        GPS Verified
-                      </span>
-                      <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-500/20 text-amber-300 backdrop-blur-md px-2.5 py-1 rounded-full border border-amber-400/30">
-                        High Priority
-                      </span>
-                    </div>
+                  <h3 className="text-base font-semibold text-foreground">
+                    {step.title}
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                    {step.body}
+                  </p>
+                </RevealItem>
+              ))}
+            </RevealGroup>
+          </Container>
+        </Section>
 
-                    <div className="z-10 mt-6">
-                      <p className="text-xs text-white/60 font-mono">ID: NKS-2026-8941</p>
-                      <p className="text-sm font-bold text-white line-clamp-1">Large Road Damage near Central Ward</p>
-                    </div>
+        {/* ================= CAPABILITIES ================= */}
+        <Section spacing="lg" className="border-y bg-card">
+          <Container width="wide">
+            <div className="grid gap-12 lg:grid-cols-[0.85fr_1.15fr] lg:gap-16">
+              <SectionHeading
+                eyebrow="Why it works"
+                title="Built so issues actually get closed"
+                description="Most reporting tools stop at the report. This one is designed around what happens next."
+              />
 
-                    {/* Shimmer pulse */}
-                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent animate-shimmer" />
-                  </div>
+              <RevealGroup className="space-y-8">
+                {CAPABILITIES.map((item) => (
+                  <RevealItem key={item.title} className="flex gap-5">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                      <item.icon
+                        className="h-5 w-5 text-primary"
+                        aria-hidden="true"
+                      />
+                    </span>
+                    <div>
+                      <h3 className="text-base font-semibold text-foreground">
+                        {item.title}
+                      </h3>
+                      <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                        {item.body}
+                      </p>
+                    </div>
+                  </RevealItem>
+                ))}
+              </RevealGroup>
+            </div>
+          </Container>
+        </Section>
 
-                  {/* AI Status Pill */}
-                  <div className="bg-white/5 rounded-xl p-3 border border-white/10 space-y-2">
-                    <div className="flex items-center justify-between text-xs text-white/80">
-                      <span className="flex items-center gap-1.5 font-medium">
-                        <Sparkles className="h-3.5 w-3.5 text-[white]" />
-                        AI Analysis Status
-                      </span>
-                      <span className="text-[#71717a] font-semibold text-[11px]">Completed</span>
-                    </div>
-                    <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-[#71717a] to-[white] w-4/5 rounded-full animate-pulse" />
-                    </div>
-                    <p className="text-[11px] text-white/50">Auto-assigned to Engineering Division (SLA: 24h)</p>
-                  </div>
+        {/* ================= CATEGORIES ================= */}
+        <Section spacing="lg">
+          <Container width="wide">
+            <SectionHeading
+              eyebrow="What you can report"
+              title="If it affects your street, it belongs here"
+              align="center"
+            />
+
+            <RevealGroup className="mx-auto mt-10 flex max-w-3xl flex-wrap justify-center gap-2.5">
+              {COMPLAINT_CATEGORIES.filter((c) => c.value !== 'other').map(
+                (category) => (
+                  <RevealItem key={category.value}>
+                    <span className="inline-flex items-center rounded-full border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-xs">
+                      {category.label}
+                    </span>
+                  </RevealItem>
+                )
+              )}
+            </RevealGroup>
+          </Container>
+        </Section>
+
+        {/* ================= CTA ================= */}
+        <Section spacing="lg" className="border-t">
+          <Container width="content">
+            <Reveal className="relative overflow-hidden rounded-2xl border bg-neutral-900 px-6 py-14 text-center sm:px-14">
+              <div
+                aria-hidden="true"
+                className="backdrop-grid-invert mask-fade-edges absolute inset-0"
+              />
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 bg-[radial-gradient(ellipse_60%_70%_at_50%_100%,rgba(133,57,83,0.4),transparent_70%)]"
+              />
+
+              <div className="relative">
+                <h2 className="text-balance text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                  Spotted something broken?
+                </h2>
+                <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-white/70">
+                  It takes about a minute to report, and you will be able to follow
+                  exactly what happens next.
+                </p>
+
+                <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+                  <Button size="lg" asChild className="h-12 px-7 text-base">
+                    <Link href="/citizen/report">
+                      Report an Issue
+                      <ArrowRight className="ml-1 h-4 w-4" />
+                    </Link>
+                  </Button>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    asChild
+                    className="h-12 border-white/20 bg-white/5 px-7 text-base text-white hover:bg-white/10 hover:text-white"
+                  >
+                    <Link href="/auth/register">Create an account</Link>
+                  </Button>
                 </div>
               </div>
-
-            </div>
-          </div>
-        </section>
-
-        {/* 3D Stats Bar */}
-        <section className="relative -mt-16 z-20 px-4">
-          <div className="container mx-auto max-w-4xl">
-            <div className="grid grid-cols-3 gap-3 md:gap-6">
-              {[
-                { icon: Users, value: 'Citizens First', label: 'Direct Government Link', color: 'text-[black]' },
-                { icon: Shield, value: 'Transparent', label: 'Real-time GPS Proof', color: 'text-[white]' },
-                { icon: Brain, value: 'AI Powered', label: 'Auto Prioritization', color: 'text-[#71717a]' },
-              ].map((stat, i) => (
-                <div 
-                  key={i} 
-                  className="flex flex-col items-center justify-center p-5 bg-card border border-border/80 rounded-2xl text-center shadow-md hover:shadow-card-hover transition-all duration-300 hover:-translate-y-1.5 group"
-                >
-                  <div className="h-11 w-11 rounded-2xl bg-primary/10 flex items-center justify-center mb-3 group-hover:scale-110 group-hover:bg-primary group-hover:text-white transition-all duration-300">
-                    <stat.icon className={`h-5 w-5 ${stat.color} group-hover:text-white transition-colors`} />
-                  </div>
-                  <p className="text-base font-extrabold text-foreground">{stat.value}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5 hidden sm:block">{stat.label}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* 3D Workflow Section */}
-        <section className="py-28 px-4 bg-background">
-          <div className="container mx-auto max-w-5xl">
-            <div className="text-center mb-16">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-primary/10 text-primary uppercase tracking-wider mb-3">
-                Intelligent Pipeline
-              </span>
-              <h2 className="text-3xl font-extrabold tracking-tight text-foreground sm:text-4xl text-balance">
-                From Report to Verified Resolution
-              </h2>
-              <p className="mt-3 text-muted-foreground max-w-xl mx-auto text-base">
-                An end-to-end civic operating workflow powered by geotagging, AI classification, and verification.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {[
-                { icon: MapPin, title: "Report", desc: "Citizen uploads photo with auto GPS coordinates.", step: "01", accent: "border-t-primary" },
-                { icon: Brain, title: "AI Analysis", desc: "System classifies, deduplicates, and prioritizes.", step: "02", accent: "border-t-[white]" },
-                { icon: CheckCircle, title: "Resolution", desc: "Assigned officer completes work with proof photo.", step: "03", accent: "border-t-[#71717a]" },
-                { icon: BarChart, title: "Governance", desc: "Dashboards update and citizens confirm fix.", step: "04", accent: "border-t-primary" },
-              ].map((item, i) => (
-                <div 
-                  key={i} 
-                  className={`relative p-6 bg-card border border-border/80 ${item.accent} border-t-4 rounded-2xl group hover:shadow-card-hover transition-all duration-300 hover:-translate-y-2 card-3d`}
-                >
-                  {/* Step number */}
-                  <span className="absolute top-4 right-4 text-xs font-mono font-extrabold text-muted-foreground/30 tabular-nums">
-                    {item.step}
-                  </span>
-                  
-                  <div className="mb-5 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary group-hover:bg-primary group-hover:text-primary-foreground transition-all duration-300 group-hover:scale-110 shadow-xs">
-                    <item.icon className="h-6 w-6" />
-                  </div>
-                  
-                  <h3 className="mb-2 text-lg font-bold text-foreground">{item.title}</h3>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{item.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
+            </Reveal>
+          </Container>
+        </Section>
       </main>
 
-      <footer className="border-t border-border/60 bg-card py-10">
-        <div className="container mx-auto px-4">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-2.5">
-              <div className="flex items-center justify-center h-8 w-8 rounded-xl bg-primary text-primary-foreground shadow-xs">
-                <ShieldAlert className="h-4 w-4" />
-              </div>
-              <span className="text-base font-extrabold text-foreground">{APP_NAME}</span>
-            </div>
-            <p className="text-xs text-muted-foreground font-medium">© 2026 CityTrace · Smart India Hackathon</p>
+      {/* ================= FOOTER ================= */}
+      <footer className="border-t bg-card">
+        <Container width="wide">
+          <div className="flex flex-col items-center justify-between gap-4 py-8 sm:flex-row">
+            <Logo size="sm" />
+
+            <p className="text-center text-sm text-muted-foreground sm:text-right">
+              © 2026 {APP_NAME}. Built for the Smart India Hackathon.
+            </p>
           </div>
-        </div>
+        </Container>
       </footer>
     </div>
   );
