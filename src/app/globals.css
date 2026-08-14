@@ -269,6 +269,18 @@ body {
   50% { opacity: 0.7; }
 }
 
+/* Map marker pulse — used by the live/critical issue markers. */
+@keyframes marker-ping {
+  0% { transform: scale(0.9); opacity: 0.7; }
+  70% { transform: scale(2.2); opacity: 0; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* Skeleton shimmer — richer than a flat opacity pulse. */
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
+}
+
 .animate-fade-in {
   animation: fade-in 0.3s ease-out;
 }
@@ -279,4 +291,109 @@ body {
 
 .animate-pulse-subtle {
   animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/*
+ * ================================================================
+ * DATA & NUMERALS
+ * ================================================================
+ * Metrics, counters, IDs and table figures should not jitter as
+ * digits change. Applied to stat/counter components.
+ */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/*
+ * ================================================================
+ * CIVIC BACKDROPS
+ * ================================================================
+ * Low-contrast, map-inspired depth layers. Content must always
+ * stay dominant — these sit at low opacity behind it.
+ */
+
+/* Faint surveyor's grid, evoking a city plan / cadastral map. */
+.backdrop-grid {
+  background-image:
+    linear-gradient(to right, rgb(44 44 44 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(44 44 44 / 0.055) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+.backdrop-grid-sm {
+  background-image:
+    linear-gradient(to right, rgb(44 44 44 / 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(44 44 44 / 0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Same grid on dark surfaces (hero, sidebar chrome). */
+.backdrop-grid-invert {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.06) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+/* Radial spotlight used to focus attention and fade grid edges. */
+.backdrop-radial {
+  background-image: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    rgb(133 57 83 / 0.16),
+    transparent 70%
+  );
+}
+
+/* Masks a backdrop layer so it dissolves toward the edges instead
+   of ending on a hard line. */
+.mask-fade-edges {
+  mask-image: radial-gradient(ellipse 75% 75% at 50% 40%, #000 40%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 75% 75% at 50% 40%, #000 40%, transparent 100%);
+}
+
+.mask-fade-b {
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+
+/*
+ * ================================================================
+ * CSS 3D SCENE
+ * ================================================================
+ * Backs the isometric city visual. Pure CSS transforms — no WebGL
+ * runtime, no extra bundle weight.
+ */
+.scene-3d {
+  perspective: 1400px;
+  perspective-origin: 50% 40%;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+/*
+ * ================================================================
+ * REDUCED MOTION
+ * ================================================================
+ * Global guard. Framer Motion components additionally consult
+ * useReducedMotion() so they resolve to opacity-only or no
+ * transition rather than merely being sped up.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-pulse-subtle,
+  .animate-fade-in,
+  .animate-slide-in {
+    animation: none !important;
+  }
 }

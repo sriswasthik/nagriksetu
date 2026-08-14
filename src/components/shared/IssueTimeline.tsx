@@ -1,0 +1,201 @@
+"use client";
+
+import { motion, useReducedMotion } from "framer-motion";
+import { AlertOctagon, Check } from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
+import {
+  TIMELINE_STAGES,
+  getStatusMeta,
+  getTimelineStageIndex,
+} from "@/lib/design/status";
+import { DURATION, EASE_OUT } from "@/lib/design/motion";
+import type { ComplaintStatus } from "@/types/complaint";
+
+interface IssueTimelineProps {
+  status: ComplaintStatus;
+  /** Submission time — anchors the first stage. */
+  createdAt?: string;
+  /** Last status change — anchors the current stage. */
+  updatedAt?: string;
+  className?: string;
+}
+
+/**
+ * ============================================================
+ * ISSUE TRACKING TIMELINE
+ * ============================================================
+ *
+ * Answers three questions at a glance: what happened, what is
+ * happening now, and what happens next.
+ *
+ * Stages come from the shared status system, which collapses the
+ * eleven database statuses into six citizen-readable stages. The
+ * order follows the real workflow (work is done, then verified,
+ * then closed) rather than an idealised sequence.
+ *
+ * Terminal states (rejected) render their own panel — forcing them
+ * onto a linear progress track would misrepresent them.
+ */
+export function IssueTimeline({
+  status,
+  createdAt,
+  updatedAt,
+  className,
+}: IssueTimelineProps) {
+  const prefersReducedMotion = useReducedMotion();
+  const currentIndex = getTimelineStageIndex(status);
+  const meta = getStatusMeta(status);
+
+  // Rejected sits outside the progress track.
+  if (currentIndex === -1) {
+    return (
+      <div
+        className={cn(
+          "flex items-start gap-3.5 rounded-lg border border-red-200 bg-red-50 p-4",
+          className
+        )}
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-100">
+          <AlertOctagon className="h-4.5 w-4.5 text-red-700" aria-hidden="true" />
+        </span>
+        <div>
+          <p className="text-sm font-semibold text-red-900">{meta.label}</p>
+          <p className="mt-1 text-sm leading-relaxed text-red-800/80">
+            {meta.description}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const isReopened = status === "reopened";
+
+  return (
+    <div className={className}>
+      {isReopened && (
+        <div className="mb-5 flex items-start gap-3 rounded-lg border border-orange-200 bg-orange-50 p-3.5">
+          <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-orange-500" />
+          <p className="text-sm leading-relaxed text-orange-900">
+            This issue was <strong className="font-semibold">reopened</strong> and
+            is being worked on again.
+          </p>
+        </div>
+      )}
+
+      <ol className="space-y-0">
+        {TIMELINE_STAGES.map((stage, index) => {
+          const isComplete = index < currentIndex;
+          const isCurrent = index === currentIndex;
+          const isUpcoming = index > currentIndex;
+          const isLast = index === TIMELINE_STAGES.length - 1;
+
+          const Icon = stage.icon;
+
+          // The current stage shows the live status description; past
+          // stages state what happened; future stages hint at what's next.
+          const description = isCurrent
+            ? meta.description
+            : isComplete
+              ? `Completed.`
+              : stage.upcomingHint;
+
+          const timestamp = isCurrent
+            ? updatedAt
+            : index === 0
+              ? createdAt
+              : undefined;
+
+          return (
+            <li key={stage.key} className="relative flex gap-4">
+              {/* Connector between nodes */}
+              {!isLast && (
+                <div
+                  aria-hidden="true"
+                  className="absolute left-[19px] top-10 h-[calc(100%-1.5rem)] w-0.5 overflow-hidden rounded-full bg-border"
+                >
+                  <motion.span
+                    className="block h-full w-full origin-top bg-primary"
+                    initial={{ scaleY: prefersReducedMotion ? 1 : 0 }}
+                    animate={{ scaleY: isComplete ? 1 : 0 }}
+                    transition={{
+                      duration: prefersReducedMotion ? 0 : DURATION.slow,
+                      ease: EASE_OUT,
+                      delay: prefersReducedMotion ? 0 : index * 0.08,
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Node */}
+              <motion.span
+                initial={
+                  prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.8 }
+                }
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{
+                  duration: prefersReducedMotion ? DURATION.fast : DURATION.base,
+                  ease: EASE_OUT,
+                  delay: prefersReducedMotion ? 0 : index * 0.08,
+                }}
+                className={cn(
+                  "relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
+                  isComplete && "border-primary bg-primary text-primary-foreground",
+                  isCurrent &&
+                    "border-primary bg-primary text-primary-foreground ring-4 ring-primary/15",
+                  isUpcoming && "border-border bg-card text-muted-foreground"
+                )}
+              >
+                {isComplete ? (
+                  <Check className="h-4.5 w-4.5" aria-hidden="true" />
+                ) : (
+                  <Icon className="h-4.5 w-4.5" aria-hidden="true" />
+                )}
+
+                {/* Live pulse on the active stage */}
+                {isCurrent && !prefersReducedMotion && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-0 rounded-full border-2 border-primary animate-[marker-ping_2.4s_ease-out_infinite]"
+                  />
+                )}
+              </motion.span>
+
+              {/* Content */}
+              <div className={cn("min-w-0 flex-1", isLast ? "pb-0" : "pb-8", "pt-1")}>
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                  <h3
+                    className={cn(
+                      "text-sm font-semibold",
+                      isUpcoming ? "text-muted-foreground" : "text-foreground"
+                    )}
+                  >
+                    {stage.label}
+                  </h3>
+
+                  {isCurrent && (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[0.6875rem] font-semibold text-primary">
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                      Current
+                    </span>
+                  )}
+                </div>
+
+                <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                  {description}
+                </p>
+
+                {timestamp && (
+                  <p className="mt-1.5 text-xs text-muted-foreground/80">
+                    <time dateTime={timestamp}>{formatDateTime(timestamp)}</time>
+                  </p>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
