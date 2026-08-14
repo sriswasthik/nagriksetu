@@ -442,90 +442,73 @@ export default function CitizenComplaintsList() {
       ======================================================= */}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-
         {/* TOTAL */}
-
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <CheckCircle2 className="h-5 w-5" />
+          <CardContent className="flex items-center gap-3.5 p-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <CheckCircle2 className="h-5.5 w-5.5" />
             </div>
-
             <div>
-              <p className="text-2xl font-bold">
+              <p className="text-2xl font-extrabold text-foreground tabular-nums">
                 {statusCounts.all}
               </p>
-
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs font-medium text-muted-foreground">
                 Total Reports
               </p>
             </div>
           </CardContent>
         </Card>
 
-
         {/* SUBMITTED */}
-
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <Clock3 className="h-5 w-5" />
+          <CardContent className="flex items-center gap-3.5 p-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600">
+              <Clock3 className="h-5.5 w-5.5" />
             </div>
-
             <div>
-              <p className="text-2xl font-bold">
+              <p className="text-2xl font-extrabold text-foreground tabular-nums">
                 {statusCounts.submitted}
               </p>
-
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs font-medium text-muted-foreground">
                 Submitted
               </p>
             </div>
           </CardContent>
         </Card>
 
-
         {/* IN PROGRESS */}
-
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <RefreshCw className="h-5 w-5" />
+          <CardContent className="flex items-center gap-3.5 p-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-500/10 text-blue-600">
+              <RefreshCw className="h-5.5 w-5.5" />
             </div>
-
             <div>
-              <p className="text-2xl font-bold">
+              <p className="text-2xl font-extrabold text-foreground tabular-nums">
                 {statusCounts.in_progress}
               </p>
-
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs font-medium text-muted-foreground">
                 In Progress
               </p>
             </div>
           </CardContent>
         </Card>
 
-
         {/* RESOLVED */}
-
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <CheckCircle2 className="h-5 w-5" />
+          <CardContent className="flex items-center gap-3.5 p-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600">
+              <CheckCircle2 className="h-5.5 w-5.5" />
             </div>
-
             <div>
-              <p className="text-2xl font-bold">
+              <p className="text-2xl font-extrabold text-foreground tabular-nums">
                 {statusCounts.resolved}
               </p>
-
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs font-medium text-muted-foreground">
                 Resolved
               </p>
             </div>
           </CardContent>
         </Card>
-
       </div>
 
 

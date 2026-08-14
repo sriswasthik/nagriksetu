@@ -15,6 +15,20 @@ const STATUS_LABELS: Record<ComplaintStatus, string> = {
   rejected: 'Rejected',
 };
 
+const STATUS_DOT_COLORS: Record<ComplaintStatus, string> = {
+  submitted: 'bg-amber-500',
+  ai_analyzed: 'bg-blue-500',
+  assigned: 'bg-amber-500',
+  accepted: 'bg-blue-500',
+  in_progress: 'bg-blue-500',
+  proof_submitted: 'bg-violet-500',
+  supervisor_review: 'bg-violet-500',
+  citizen_confirmation: 'bg-violet-500',
+  resolved: 'bg-emerald-500',
+  reopened: 'bg-orange-500',
+  rejected: 'bg-red-500',
+};
+
 export function StatusBadge({ status, className }: { status: ComplaintStatus; className?: string }) {
   const getVariant = (s: ComplaintStatus) => {
     switch (s) {
@@ -42,6 +56,7 @@ export function StatusBadge({ status, className }: { status: ComplaintStatus; cl
 
   return (
     <Badge variant={getVariant(status)} className={className}>
+      <span className={`status-dot ${STATUS_DOT_COLORS[status]}`} />
       {STATUS_LABELS[status]}
     </Badge>
   );

@@ -22,7 +22,7 @@ export function Sidebar({ navType }: SidebarProps) {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r bg-card h-[calc(100vh-4rem)] sticky top-16">
-      <ScrollArea className="flex-1 py-6 px-4">
+      <ScrollArea className="flex-1 py-6 px-3">
         <nav className="flex flex-col space-y-1">
           {items.map((item) => {
             const Icon = item.icon;
@@ -37,25 +37,25 @@ export function Sidebar({ navType }: SidebarProps) {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center justify-between rounded-md px-3 py-2.5 text-sm font-medium transition-colors group",
+                  "flex items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-150 group",
                   isActive 
-                    ? "bg-secondary/10 text-secondary font-semibold" 
+                    ? "bg-primary text-primary-foreground font-semibold shadow-sm" 
                     : isReportIssue 
-                      ? "bg-primary text-primary-foreground hover:bg-primary/90 mt-4 shadow-sm"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                      ? "gradient-primary text-white hover:opacity-90 mt-4 shadow-sm rounded-lg py-3"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 )}
               >
-                <div className="flex items-center">
+                <div className="flex items-center gap-3">
                   <Icon className={cn(
-                    "mr-3 h-5 w-5", 
-                    isActive ? "text-secondary" : isReportIssue ? "text-primary-foreground" : "text-muted-foreground group-hover:text-foreground"
+                    "h-[18px] w-[18px]", 
+                    isActive ? "text-primary-foreground" : isReportIssue ? "text-white" : "text-muted-foreground group-hover:text-accent-foreground"
                   )} />
                   {item.label}
                 </div>
                 {item.badge !== undefined && item.badge > 0 && (
                   <span className={cn(
                     "inline-flex h-5 items-center justify-center rounded-full px-2 text-xs font-semibold",
-                    isActive ? "bg-secondary text-primary-foreground" : "bg-muted-foreground/20 text-muted-foreground group-hover:text-foreground"
+                    isActive ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted-foreground/20 text-muted-foreground group-hover:text-accent-foreground"
                   )}>
                     {item.badge}
                   </span>
@@ -66,9 +66,9 @@ export function Sidebar({ navType }: SidebarProps) {
         </nav>
       </ScrollArea>
       
-      <div className="p-4 border-t text-xs text-muted-foreground">
-        <p>NagrikSetu © 2026</p>
-        <p className="mt-1">Smart India Hackathon</p>
+      <div className="p-4 border-t">
+        <p className="text-xs font-medium text-muted-foreground">NagrikSetu</p>
+        <p className="mt-0.5 text-[10px] text-muted-foreground/60">Smart India Hackathon · v1.0</p>
       </div>
     </aside>
   );

@@ -3,10 +3,10 @@ export const APP_TAGLINE = 'From Citizen Voices to Smarter Governance';
 export const APP_DESCRIPTION = 'Transform civic complaints into intelligent, prioritized, trackable and verifiable civic operations.';
 
 export const COLORS = {
-  primary: '#853953',
-  secondary: '#612D53',
-  foreground: '#2C2C2C',
-  background: '#F3F4F4',
+  primary: '#7EC151',
+  secondary: '#1C3318',
+  foreground: '#182816',
+  background: '#F9FBF6',
 } as const;
 
 export const DEPARTMENTS = [

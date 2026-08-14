@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 
-const COLORS = ['#853953', '#612D53', '#A85A74', '#4A1D3D', '#D989A3'];
+const COLORS = ['#7EC151', '#B2D959', '#FED24F', '#FFF449', '#3C6E25'];
 
 export default function GovernmentDashboard() {
   const [isLoading, setIsLoading] = useState(true);
