@@ -1,172 +1,270 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { Calendar, CheckCircle2, MapPin, Search, X } from "lucide-react";
+
 import { PageHeader } from "@/components/shared/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
+import { PriorityBadge } from "@/components/shared/PriorityBadge";
+import { SLAIndicator } from "@/components/shared/SLAIndicator";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
+import { FilterChips, type FilterOption } from "@/components/shared/FilterChips";
+import { IssueListSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { workOrderService } from "@/lib/services/workOrders";
 import { authService } from "@/lib/services/auth";
 import type { WorkOrder } from "@/types/workOrder";
-import { PriorityBadge } from "@/components/shared/PriorityBadge";
-import { formatRelativeTime } from "@/lib/utils";
-import { Search, Filter, Loader2, MapPin, Clock, Calendar, CheckCircle2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+
+/**
+ * Status filters live here rather than in the sidebar: they filter
+ * this list, and putting them in navigation would both mislead and
+ * force the whole app out of static prerendering.
+ */
+type FilterKey = "active" | "new" | "in_progress" | "review" | "done" | "all";
+
+const MATCHERS: Record<FilterKey, (wo: WorkOrder) => boolean> = {
+  active: (wo) => ["assigned", "accepted", "in_progress"].includes(wo.status),
+  new: (wo) => wo.status === "assigned",
+  in_progress: (wo) => wo.status === "in_progress",
+  review: (wo) => ["proof_submitted", "supervisor_review"].includes(wo.status),
+  done: (wo) => ["completed", "approved"].includes(wo.status),
+  all: () => true,
+};
 
 export default function OfficerWorkOrdersList() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("active");
+  const [filter, setFilter] = useState<FilterKey>("active");
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const user = await authService.getCurrentUser();
-        const data = await workOrderService.getWorkOrders({ officerId: user?.id });
-        setWorkOrders(data);
-      } catch (error) {
-        console.error("Failed to load work orders", error);
-      } finally {
-        setIsLoading(false);
-      }
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const user = await authService.getCurrentUser().catch(() => null);
+      const data = await workOrderService.getWorkOrders({ officerId: user?.id });
+      setWorkOrders(data);
+    } catch (loadError) {
+      console.error("Failed to load work orders", loadError);
+      setError("We couldn't load your work orders. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
-    loadData();
   }, []);
 
-  const filteredOrders = workOrders.filter(wo => {
-    let matchesSearch = true;
-    let matchesStatus = true;
+  useEffect(() => {
+    load();
+  }, [load]);
 
-    // Search filter
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      matchesSearch = 
-        wo.complaintTitle.toLowerCase().includes(q) || 
-        wo.id.toLowerCase().includes(q) ||
-        wo.location.address.toLowerCase().includes(q);
-    }
+  const counts = useMemo(
+    () => ({
+      active: workOrders.filter(MATCHERS.active).length,
+      new: workOrders.filter(MATCHERS.new).length,
+      in_progress: workOrders.filter(MATCHERS.in_progress).length,
+      review: workOrders.filter(MATCHERS.review).length,
+      done: workOrders.filter(MATCHERS.done).length,
+      all: workOrders.length,
+    }),
+    [workOrders]
+  );
 
-    // Status filter
-    if (statusFilter !== "all") {
-      if (statusFilter === "active") {
-        matchesStatus = ['assigned', 'accepted', 'in_progress'].includes(wo.status);
-      } else {
-        matchesStatus = wo.status === statusFilter;
-      }
-    }
+  const filterOptions: FilterOption<FilterKey>[] = [
+    { value: "active", label: "Active", count: counts.active },
+    { value: "new", label: "New", count: counts.new, tone: "attention" },
+    { value: "in_progress", label: "In progress", count: counts.in_progress },
+    { value: "review", label: "Awaiting verification", count: counts.review },
+    { value: "done", label: "Completed", count: counts.done },
+    { value: "all", label: "All", count: counts.all },
+  ];
 
-    return matchesSearch && matchesStatus;
-  });
+  const filtered = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    return workOrders
+      .filter((wo) => {
+        if (!MATCHERS[filter](wo)) return false;
+        if (!query) return true;
+
+        return [wo.complaintTitle, wo.id, wo.location.address, wo.complaintId]
+          .filter(Boolean)
+          .some((field) => String(field).toLowerCase().includes(query));
+      })
+      .sort((a, b) => {
+        // Urgency first: priority, then how close the SLA is.
+        const byPriority = b.priorityScore - a.priorityScore;
+        if (byPriority !== 0) return byPriority;
+        return a.slaHoursRemaining - b.slaHoursRemaining;
+      });
+  }, [workOrders, filter, searchQuery]);
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-[50vh]">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      <div>
+        <PageHeaderSkeleton withAction={false} />
+        <IssueListSkeleton count={3} />
       </div>
     );
   }
 
   return (
     <div>
-      <PageHeader 
-        title="My Work Orders" 
-        description="Manage and update your assigned field tasks."
+      <PageHeader
+        title="Work Orders"
+        description="Your assigned field tasks, most urgent first."
       />
 
-      <Card className="mb-6">
-        <CardContent className="p-4 flex flex-col sm:flex-row gap-4">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-            <Input 
-              placeholder="Search by WO ID, title, or location..." 
-              className="pl-9"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-          <div className="w-full sm:w-48 flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="Filter tasks" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Tasks</SelectItem>
-                <SelectItem value="active">Active (Pending)</SelectItem>
-                <SelectItem value="assigned">New Assignments</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="proof_submitted">Proof Submitted</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
+      {error && (
+        <ErrorState
+          title="Unable to load work orders"
+          description={error}
+          onRetry={load}
+          className="mb-6"
+        />
+      )}
 
-      {filteredOrders.length === 0 ? (
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-            <CheckCircle2 className="h-12 w-12 text-muted-foreground opacity-20 mb-4" />
-            <h3 className="text-lg font-semibold">No work orders found</h3>
-            <p className="text-muted-foreground max-w-sm mt-2">
-              You have no tasks matching your current filters.
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-4">
-          {filteredOrders.sort((a, b) => b.priorityScore - a.priorityScore).map((order) => (
-            <Card key={order.id} className="hover:border-primary/50 transition-colors">
-              <div className="flex flex-col md:flex-row">
-                <div className="flex-1 p-5">
-                  <div className="flex flex-wrap items-center justify-between mb-2 gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-sm font-medium text-muted-foreground">{order.id}</span>
-                      <Badge variant={order.status === 'assigned' ? 'warning' : 'info'} className="capitalize">
-                        {order.status.replace('_', ' ')}
-                      </Badge>
-                      <PriorityBadge level={order.priorityLevel} />
-                    </div>
-                    {order.status !== 'completed' && order.status !== 'proof_submitted' && (
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-1 rounded-md">
-                        <Clock className="h-3.5 w-3.5" />
-                        SLA: {order.slaHoursRemaining}h left
-                      </div>
-                    )}
-                  </div>
-                  
-                  <h3 className="text-lg font-bold mb-1">{order.complaintTitle}</h3>
-                  <div className="flex items-start gap-2 text-sm text-muted-foreground mb-4">
-                    <MapPin className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>{order.location.address}</span>
-                  </div>
-                  
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-                    <div className="flex items-center gap-1.5 text-muted-foreground">
-                      <Calendar className="h-4 w-4" />
-                      Assigned: {new Date(order.assignedAt).toLocaleDateString()}
-                    </div>
-                    <div className="text-muted-foreground">
-                      Ref: <span className="font-mono text-xs">{order.complaintId}</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="flex md:flex-col justify-end md:justify-center p-5 pt-0 md:pt-5 border-t md:border-t-0 md:border-l md:w-48 gap-2 bg-muted/20">
-                  <Link href={`/officer/work-orders/${order.id}`} className="w-full">
-                    <Button className="w-full h-11 md:h-12">
-                      {order.status === 'assigned' ? 'Review & Accept' : 
-                       order.status === 'proof_submitted' || order.status === 'completed' ? 'View Details' : 'Update Status'}
-                    </Button>
-                  </Link>
-                </div>
-              </div>
-            </Card>
-          ))}
+      <DemoDataNotice className="mb-6" />
+
+      {/* ---------- Search + filters ---------- */}
+      <div className="mb-6 space-y-4">
+        <div className="relative max-w-md">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search by work order ID, title or location…"
+            aria-label="Search work orders"
+            className="h-11 pl-10 pr-10"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
         </div>
+
+        <FilterChips
+          options={filterOptions}
+          value={filter}
+          onChange={setFilter}
+          label="Filter work orders by status"
+        />
+      </div>
+
+      <p aria-live="polite" className="mb-4 text-sm text-muted-foreground">
+        {filtered.length} {filtered.length === 1 ? "work order" : "work orders"}
+      </p>
+
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={CheckCircle2}
+          title="Nothing here"
+          description="No work order matches this filter. Try another filter, or clear your search."
+          action={
+            <Button
+              variant="outline"
+              onClick={() => {
+                setFilter("all");
+                setSearchQuery("");
+              }}
+            >
+              Show all
+            </Button>
+          }
+        />
+      ) : (
+        <ul className="space-y-4">
+          {filtered.map((order) => {
+            const isClosed = ["completed", "approved"].includes(order.status);
+
+            return (
+              <li key={order.id}>
+                <article className="overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary/40">
+                  <div className="flex flex-col md:flex-row">
+                    <div className="min-w-0 flex-1 p-5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {order.id}
+                        </span>
+                        <Badge
+                          variant={order.status === "assigned" ? "warning" : "info"}
+                          className="capitalize"
+                        >
+                          {order.status.replace(/_/g, " ")}
+                        </Badge>
+                        <PriorityBadge
+                          level={order.priorityLevel}
+                          score={order.priorityScore}
+                        />
+                        {!isClosed && (
+                          <SLAIndicator hoursRemaining={order.slaHoursRemaining} />
+                        )}
+                      </div>
+
+                      <h2 className="mt-3 text-base font-semibold leading-snug text-foreground sm:text-lg">
+                        <Link
+                          href={`/officer/work-orders/${order.id}`}
+                          className="rounded transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {order.complaintTitle}
+                        </Link>
+                      </h2>
+
+                      <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
+                        <MapPin
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                        {order.location.address}
+                      </p>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" aria-hidden="true" />
+                          Assigned{" "}
+                          {new Date(order.assignedAt).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                          })}
+                        </span>
+                        <span>
+                          Report:{" "}
+                          <span className="font-mono">{order.complaintId}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center border-t bg-muted/25 p-4 md:w-48 md:border-l md:border-t-0">
+                      <Button asChild className="w-full">
+                        <Link href={`/officer/work-orders/${order.id}`}>
+                          {order.status === "assigned"
+                            ? "Review & accept"
+                            : isClosed
+                              ? "View details"
+                              : "Update status"}
+                        </Link>
+                      </Button>
+                    </div>
+                  </div>
+                </article>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );

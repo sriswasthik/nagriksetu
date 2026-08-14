@@ -1,153 +1,249 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  ClipboardList,
+  MapPin,
+} from "lucide-react";
+
 import { PageHeader } from "@/components/shared/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { StatCard } from "@/components/shared/StatCard";
+import { PriorityBadge } from "@/components/shared/PriorityBadge";
+import { SLAIndicator } from "@/components/shared/SLAIndicator";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
+import { StatGridSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { formatRelativeTime } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
 import { authService } from "@/lib/services/auth";
 import type { WorkOrder } from "@/types/workOrder";
-import { PriorityBadge } from "@/components/shared/PriorityBadge";
-import { formatRelativeTime } from "@/lib/utils";
-import { ClipboardList, AlertCircle, Clock, MapPin, CheckCircle2, ArrowRight } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+
+const ACTIVE_STATUSES = ["assigned", "accepted", "in_progress"];
 
 export default function OfficerDashboard() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [userName, setUserName] = useState("Officer");
-  const [department, setDepartment] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [officerName, setOfficerName] = useState<string | null>(null);
+  const [department, setDepartment] = useState<string>("");
 
-  useEffect(() => {
-    async function loadDashboard() {
-      try {
-        const user = await authService.getCurrentUser();
-        if (user) {
-          setUserName(user.name.split(' ')[0]);
-          setDepartment(user.department || "");
-        }
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
 
-        // Mock load all work orders assigned to this officer
-        const data = await workOrderService.getWorkOrders({ officerId: user?.id });
-        setWorkOrders(data);
-      } catch (error) {
-        console.error("Failed to load officer dashboard data", error);
-      } finally {
-        setIsLoading(false);
-      }
+    try {
+      const user = await authService.getCurrentUser().catch(() => null);
+
+      if (user?.name) setOfficerName(user.name.split(" ")[0]);
+      if (user?.department) setDepartment(user.department);
+
+      const data = await workOrderService.getWorkOrders({
+        officerId: user?.id,
+      });
+      setWorkOrders(data);
+    } catch (loadError) {
+      console.error("Failed to load officer dashboard", loadError);
+      setError("We couldn't load your work orders. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
-    loadDashboard();
   }, []);
 
-  const activeOrders = workOrders.filter(wo => ['assigned', 'accepted', 'in_progress'].includes(wo.status));
-  const urgentOrders = activeOrders.filter(wo => wo.priorityLevel === 'critical' || wo.priorityLevel === 'high');
-  const completedToday = workOrders.filter(wo => 
-    (wo.status === 'completed' || wo.status === 'proof_submitted') && 
-    new Date(wo.updatedAt).toDateString() === new Date().toDateString()
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (isLoading) {
+    return (
+      <div>
+        <PageHeaderSkeleton withAction={false} />
+        <StatGridSkeleton count={3} />
+        <Skeleton className="mt-10 h-6 w-48" />
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          {Array.from({ length: 2 }).map((_, index) => (
+            <Skeleton key={index} className="h-52 rounded-lg" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const active = workOrders.filter((wo) => ACTIVE_STATUSES.includes(wo.status));
+  const urgent = active.filter(
+    (wo) => wo.priorityLevel === "critical" || wo.priorityLevel === "high"
   );
+  const breaching = active.filter((wo) => wo.slaHoursRemaining <= 6);
+  const completedToday = workOrders.filter(
+    (wo) =>
+      (wo.status === "completed" || wo.status === "proof_submitted") &&
+      new Date(wo.updatedAt).toDateString() === new Date().toDateString()
+  );
+
+  const departmentLabel = department
+    ? department.replace("dept-", "").toUpperCase()
+    : null;
 
   return (
     <div>
-      <PageHeader 
-        title={`Welcome, ${userName}`} 
-        description={`Field Operations • ${department.replace('dept-', '').toUpperCase()} Department`}
+      <PageHeader
+        title={officerName ? `Welcome, ${officerName}` : "Field operations"}
+        description={
+          departmentLabel
+            ? `Your assigned work orders · ${departmentLabel} department`
+            : "Your assigned work orders for today."
+        }
+        action={
+          <Button asChild>
+            <Link href="/officer/work-orders">
+              <ClipboardList className="mr-1 h-4 w-4" aria-hidden="true" />
+              All work orders
+            </Link>
+          </Button>
+        }
       />
 
-      <div className="grid gap-4 md:grid-cols-3 mb-8">
-        <Card className="bg-primary text-primary-foreground">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-primary-foreground/80">Active Assignments</CardTitle>
-            <ClipboardList className="h-4 w-4 text-primary-foreground/80" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{activeOrders.length}</div>
-            <p className="text-xs text-primary-foreground/70 mt-1">Pending your action</p>
-          </CardContent>
-        </Card>
-        
-        <Card className="border-destructive/50 bg-destructive/5">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-destructive">Urgent / SLA Risk</CardTitle>
-            <AlertCircle className="h-4 w-4 text-destructive" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-destructive">{urgentOrders.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">Requires immediate attention</p>
-          </CardContent>
-        </Card>
+      {error && (
+        <ErrorState
+          title="Unable to load work orders"
+          description={error}
+          onRetry={load}
+          className="mb-6"
+        />
+      )}
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Completed Today</CardTitle>
-            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold">{completedToday.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">Work orders resolved</p>
-          </CardContent>
-        </Card>
+      <DemoDataNotice
+        className="mb-6"
+        detail="Work orders are served from local demonstration data — there is no work_orders table in the database yet."
+      />
+
+      {/* ---------- Operational metrics ---------- */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <StatCard
+          label="Active assignments"
+          value={active.length}
+          hint="Assigned, accepted or under way"
+          icon={ClipboardList}
+          tone="brand"
+          href="/officer/work-orders"
+        />
+        <StatCard
+          label="At SLA risk"
+          value={breaching.length}
+          hint="Six hours or less remaining"
+          icon={AlertCircle}
+          tone={breaching.length > 0 ? "danger" : "default"}
+        />
+        <StatCard
+          label="Completed today"
+          value={completedToday.length}
+          hint="Proof submitted or signed off"
+          icon={CheckCircle2}
+          tone="success"
+        />
       </div>
 
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold tracking-tight">Priority Work Orders</h2>
-          <Link href="/officer/work-orders">
-            <Button variant="ghost" size="sm">View All <ArrowRight className="ml-2 h-4 w-4" /></Button>
-          </Link>
+      {/* ---------- Priority queue ---------- */}
+      <section aria-labelledby="priority-heading" className="mt-10">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <div>
+            <h2
+              id="priority-heading"
+              className="text-lg font-semibold tracking-tight text-foreground"
+            >
+              Work on these first
+            </h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Ordered by priority score, then SLA deadline.
+            </p>
+          </div>
+
+          {active.length > 4 && (
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/officer/work-orders">
+                View all
+                <ArrowRight className="ml-1 h-4 w-4" aria-hidden="true" />
+              </Link>
+            </Button>
+          )}
         </div>
 
-        {activeOrders.length === 0 ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-              <CheckCircle2 className="h-12 w-12 text-muted-foreground opacity-20 mb-4" />
-              <h3 className="text-lg font-semibold">You&apos;re all caught up!</h3>
-              <p className="text-muted-foreground max-w-sm mt-2">
-                There are no active work orders assigned to you at the moment.
-              </p>
-            </CardContent>
-          </Card>
+        {active.length === 0 ? (
+          <EmptyState
+            icon={CheckCircle2}
+            title="Nothing outstanding"
+            description="You have no active work orders right now. New assignments will appear here as they are routed to you."
+          />
         ) : (
-          <div className="grid gap-4 md:grid-cols-2">
-            {activeOrders.sort((a, b) => b.priorityScore - a.priorityScore).slice(0, 4).map((order) => (
-              <Card key={order.id} className="flex flex-col hover:border-primary/50 transition-colors">
-                <CardHeader className="pb-3">
-                  <div className="flex justify-between items-start mb-2">
-                    <span className="text-xs font-mono font-medium text-muted-foreground">{order.id}</span>
-                    <Badge variant={order.status === 'assigned' ? 'warning' : 'info'} className="capitalize">
-                      {order.status.replace('_', ' ')}
+          <ul className="grid gap-4 md:grid-cols-2">
+            {[...active]
+              .sort((a, b) => {
+                const byPriority = b.priorityScore - a.priorityScore;
+                if (byPriority !== 0) return byPriority;
+                return a.slaHoursRemaining - b.slaHoursRemaining;
+              })
+              .slice(0, 4)
+              .map((order) => (
+                <li
+                  key={order.id}
+                  className="flex flex-col rounded-lg border bg-card p-5 transition-colors hover:border-primary/40"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {order.id}
+                    </span>
+                    <Badge
+                      variant={order.status === "assigned" ? "warning" : "info"}
+                      className="capitalize"
+                    >
+                      {order.status.replace(/_/g, " ")}
                     </Badge>
                   </div>
-                  <CardTitle className="text-lg line-clamp-1">{order.complaintTitle}</CardTitle>
-                </CardHeader>
-                <CardContent className="flex-1">
-                  <div className="flex items-start gap-2 text-sm text-muted-foreground mb-3">
-                    <MapPin className="h-4 w-4 shrink-0 mt-0.5" />
+
+                  <h3 className="mt-3 text-base font-semibold leading-snug text-foreground">
+                    <Link
+                      href={`/officer/work-orders/${order.id}`}
+                      className="rounded transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {order.complaintTitle}
+                    </Link>
+                  </h3>
+
+                  <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
+                    <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span className="line-clamp-2">{order.location.address}</span>
+                  </p>
+
+                  <div className="mt-3.5 flex flex-wrap gap-2">
+                    <PriorityBadge
+                      level={order.priorityLevel}
+                      score={order.priorityScore}
+                    />
+                    <SLAIndicator hoursRemaining={order.slaHoursRemaining} />
                   </div>
-                  <div className="flex items-center gap-4">
-                    <PriorityBadge level={order.priorityLevel} />
-                    <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-1 rounded-md">
-                      <Clock className="h-3.5 w-3.5" />
-                      {order.slaHoursRemaining}h remaining
-                    </div>
-                  </div>
-                </CardContent>
-                <div className="p-6 pt-0 mt-auto border-t">
-                  <div className="flex items-center justify-between pt-4">
+
+                  <div className="mt-auto flex items-center justify-between gap-3 border-t pt-4">
                     <span className="text-xs text-muted-foreground">
                       Assigned {formatRelativeTime(order.assignedAt)}
                     </span>
-                    <Link href={`/officer/work-orders/${order.id}`}>
-                      <Button size="sm">Open Task</Button>
-                    </Link>
+                    <Button asChild size="sm">
+                      <Link href={`/officer/work-orders/${order.id}`}>
+                        {order.status === "assigned" ? "Review" : "Update"}
+                      </Link>
+                    </Button>
                   </div>
-                </div>
-              </Card>
-            ))}
-          </div>
+                </li>
+              ))}
+          </ul>
         )}
-      </div>
+      </section>
     </div>
   );
 }

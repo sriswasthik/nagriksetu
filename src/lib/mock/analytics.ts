@@ -12,13 +12,32 @@ export const mockAnalyticsSummary: AnalyticsSummary = {
   resolvedToday: 98
 };
 
+/*
+ * Deterministic pseudo-random generator.
+ *
+ * Math.random() at module scope produced different values on the
+ * server and the client, which risks a hydration mismatch and made
+ * the demo charts change shape on every reload. A fixed seed keeps
+ * the sample data stable and reproducible.
+ */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+
+  return () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+}
+
+const trendRandom = seededRandom(20260813);
+
 export const mockTrendData: TrendDataPoint[] = Array.from({ length: 30 }).map((_, i) => {
   const date = new Date();
   date.setDate(date.getDate() - (29 - i));
   return {
     date: date.toISOString().split('T')[0],
-    complaints: Math.floor(Math.random() * 50) + 100,
-    resolved: Math.floor(Math.random() * 60) + 90
+    complaints: Math.floor(trendRandom() * 50) + 100,
+    resolved: Math.floor(trendRandom() * 60) + 90
   };
 });
 
