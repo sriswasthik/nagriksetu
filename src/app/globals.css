@@ -247,10 +247,84 @@ body {
   background: var(--muted-foreground);
 }
 
-/* Leaflet overrides */
+/*
+ * ================================================================
+ * LEAFLET
+ * ================================================================
+ * Themed to match the design system, and given a map-like substrate
+ * so a blocked/offline tile server degrades to something that still
+ * reads as a map rather than an empty grey box.
+ */
 .leaflet-container {
   font-family: var(--font-sans);
-  border-radius: var(--radius-lg);
+  background-color: var(--neutral-200);
+  background-image:
+    linear-gradient(to right, rgb(44 44 44 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(44 44 44 / 0.055) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Zoom / layer controls */
+.leaflet-control-zoom a,
+.leaflet-bar a {
+  border-color: var(--border) !important;
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
+  font-weight: 500;
+}
+
+.leaflet-control-zoom a:hover,
+.leaflet-bar a:hover {
+  background-color: var(--muted) !important;
+}
+
+.leaflet-bar {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm) !important;
+  overflow: hidden;
+}
+
+/* Keyboard focus must stay visible on map controls. */
+.leaflet-container a:focus-visible,
+.leaflet-container button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Attribution — required by OSM, kept legible but quiet. */
+.leaflet-control-attribution {
+  background-color: rgb(255 255 255 / 0.85) !important;
+  color: var(--muted-foreground) !important;
+  font-size: 0.6875rem !important;
+  backdrop-filter: blur(4px);
+}
+
+.leaflet-control-attribution a {
+  color: var(--primary) !important;
+}
+
+/* Popups */
+.leaflet-popup-content-wrapper {
+  border-radius: var(--radius-lg) !important;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg) !important;
+  padding: 0 !important;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  width: auto !important;
+  min-width: 15rem;
+}
+
+.leaflet-popup-tip {
+  border: 1px solid var(--border);
+}
+
+/* DivIcon markers must not carry Leaflet's default chrome. */
+.citytrace-marker {
+  background: transparent;
+  border: 0;
 }
 
 /* Animations */
