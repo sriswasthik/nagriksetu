@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { NavItem, citizenNav, officerNav, governmentNav } from '@/config/navigation';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { APP_NAME } from '@/lib/constants';
 
 interface NavbarProps {
   navType?: 'citizen' | 'officer' | 'government';
@@ -40,7 +41,7 @@ export function Navbar({ navType }: NavbarProps) {
                 <div className="flex items-center justify-center h-8 w-8 rounded-md bg-primary text-primary-foreground mr-3">
                   <ShieldAlert className="h-5 w-5" />
                 </div>
-                <span className="font-bold text-xl tracking-tight text-foreground">NagrikSetu</span>
+                <span className="font-bold text-xl tracking-tight text-foreground">{APP_NAME}</span>
               </div>
               <MobileNavItems items={navItems} />
             </SheetContent>
@@ -53,7 +54,7 @@ export function Navbar({ navType }: NavbarProps) {
               <ShieldAlert className="h-5 w-5" />
             </div>
             <span className="font-bold text-xl tracking-tight text-foreground hidden sm:inline-block">
-              NagrikSetu
+              {APP_NAME}
             </span>
           </Link>
         </div>

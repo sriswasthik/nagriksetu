@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { NavItem, citizenNav, officerNav, governmentNav } from '@/config/navigation';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { APP_NAME } from '@/lib/constants';
 
 interface SidebarProps {
   navType?: 'citizen' | 'officer' | 'government';
@@ -67,7 +68,7 @@ export function Sidebar({ navType }: SidebarProps) {
       </ScrollArea>
       
       <div className="p-4 border-t text-xs text-muted-foreground">
-        <p>NagrikSetu © 2026</p>
+        <p>{APP_NAME} © 2026</p>
         <p className="mt-1">Smart India Hackathon</p>
       </div>
     </aside>

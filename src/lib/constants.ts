@@ -1,4 +1,4 @@
-export const APP_NAME = 'NagrikSetu';
+export const APP_NAME = 'CityTrace';
 export const APP_TAGLINE = 'From Citizen Voices to Smarter Governance';
 export const APP_DESCRIPTION = 'Transform civic complaints into intelligent, prioritized, trackable and verifiable civic operations.';
 
