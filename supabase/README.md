@@ -5,6 +5,34 @@ no state that only exists in the Supabase dashboard: buckets, storage
 policies, triggers, reference data and the analytics functions are all
 migrations, so a fresh project reproduces a working database exactly.
 
+## Not using the CLI? Paste one file
+
+```
+supabase/bootstrap.sql
+```
+
+Everything the application needs on top of the original schema, in one
+file. Supabase dashboard → SQL Editor → New query → paste → Run. Safe to
+run repeatedly, and it refuses to run at all if the original tables are
+absent rather than failing halfway through.
+
+`supabase db push` does the same thing and records it in the migration
+history, which is preferable when the CLI is part of how you deploy. This
+file is the escape hatch, and it exists because being told to run a CLI
+command is no help if the CLI is not part of your workflow.
+
+Regenerate it after adding a migration:
+
+```bash
+./scripts/generate-bootstrap.sh   # rebuild from supabase/migrations/20260814*
+./scripts/verify-bootstrap.sh     # prove it still works, three runs deep
+```
+
+`verify-bootstrap.sh` builds a database holding only the original schema —
+the state a real deployment was found in — confirms submissions are broken
+there, runs the bootstrap three times, requires `diagnose.sql` to come back
+clean, and files a report to prove it end to end.
+
 ## If something is failing, check the schema first
 
 ```

@@ -60,6 +60,11 @@ There is no state that exists only in the Supabase dashboard — buckets,
 storage policies, triggers, reference data and the analytics functions are
 all migrations, so a fresh project reproduces a working database exactly.
 
+Without the CLI, paste [`supabase/bootstrap.sql`](supabase/bootstrap.sql)
+into the SQL editor instead; it is the same set in one re-runnable file.
+[`supabase/diagnose.sql`](supabase/diagnose.sql) reports what a database is
+missing.
+
 **One manual step is required.** Every profile is created as a `citizen`
 and nothing in the UI can change a role, so a new deployment has no staff
 until an administrator is appointed by hand after the first sign-up:
@@ -86,6 +91,8 @@ security model.
 | `npm run lint` | ESLint |
 | `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
 | `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
+| `./scripts/verify-bootstrap.sh` | Prove `supabase/bootstrap.sql` upgrades an original-schema database and is safe to re-run |
+| `./scripts/generate-bootstrap.sh` | Rebuild `supabase/bootstrap.sql` after adding a migration |
 
 ## Project layout
 

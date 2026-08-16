@@ -61,12 +61,37 @@ function asErrorLike(error: unknown): SupabaseErrorLike | null {
  * Recognises "this database has not had the migrations applied".
  *
  * PostgREST answers a call to a function it cannot find with PGRST202,
- * and Postgres itself with 42883. Both mean the same thing in practice
- * and neither is anything the person filing a report can fix, so they get
- * a message aimed at whoever deployed it instead of the raw text.
+ * and Postgres itself with 42883 (no such function) or 42P01 (no such
+ * relation). None of it is anything the person filing a report can fix,
+ * so they get a message aimed at whoever deployed it.
  */
-function schemaIsBehind(code: string | undefined): boolean {
+export function schemaIsBehind(code: string | undefined): boolean {
   return code === "PGRST202" || code === "42883" || code === "42P01";
+}
+
+/**
+ * The one case that looks identical but is not: PostgREST serves rpc()
+ * from a cached copy of the schema, so a function that genuinely exists
+ * is invisible until that cache reloads. Same PGRST202, different fix —
+ * and telling someone to re-run migrations they have already applied
+ * sends them in a circle.
+ *
+ * PostgREST says so in the message; there is no distinct code.
+ */
+function schemaCacheIsStale(like: SupabaseErrorLike): boolean {
+  const haystack = `${like.message ?? ""} ${like.hint ?? ""}`.toLowerCase();
+  return like.code === "PGRST202" && haystack.includes("schema cache");
+}
+
+/** Does this error mean the call could not be found, by either route? */
+export function isMissingDatabaseObject(error: unknown): boolean {
+  const like = asErrorLike(error);
+  return like ? schemaIsBehind(like.code) : false;
+}
+
+/** Postgres SQLSTATE, when the error carries one. */
+export function errorCode(error: unknown): string | undefined {
+  return asErrorLike(error)?.code;
 }
 
 /**
@@ -89,11 +114,21 @@ export function toActionableError(error: unknown, fallback: string): Error {
 
   const { code, message, details, hint } = like;
 
+  if (schemaCacheIsStale(like)) {
+    return new Error(
+      "The database was updated but has not finished reloading. " +
+        "Wait a few seconds and try again — or run " +
+        "`notify pgrst, 'reload schema';` in the SQL editor to do it now.",
+      { cause: error }
+    );
+  }
+
   if (schemaIsBehind(code)) {
     return new Error(
       "This CityTrace deployment is missing part of its database schema. " +
-        "Apply the migrations in supabase/migrations (`supabase db push`), " +
-        "then try again.",
+        "Paste supabase/bootstrap.sql into the Supabase SQL editor and run " +
+        "it (or `supabase db push` if you use the CLI), then try again. " +
+        "supabase/diagnose.sql shows exactly what is missing.",
       { cause: error }
     );
   }
@@ -107,8 +142,8 @@ export function toActionableError(error: unknown, fallback: string): Error {
     return new Error(
       "This CityTrace deployment is missing part of its database schema, " +
         `so the field \`${columnFromNotNull(message)}\` could not be filled. ` +
-        "Apply the migrations in supabase/migrations (`supabase db push`), " +
-        "then try again.",
+        "Paste supabase/bootstrap.sql into the Supabase SQL editor and run " +
+        "it, then try again.",
       { cause: error }
     );
   }
