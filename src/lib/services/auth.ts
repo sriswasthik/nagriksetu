@@ -128,8 +128,18 @@ export async function getCurrentProfile() {
     error: userError,
   } = await supabase.auth.getUser();
 
+  /*
+   * Signed out is not an error. getUser() reports a missing session by
+   * returning an AuthSessionMissingError, and rethrowing it made every
+   * pre-sign-in render look like a failure. Null means "nobody is signed
+   * in", which is what callers already handle.
+   */
   if (userError) {
-    throw userError;
+    if (userError.name !== "AuthSessionMissingError") {
+      console.error("Session lookup failed:", userError.message);
+    }
+
+    return null;
   }
 
   if (!user) {

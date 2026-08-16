@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { getStatusMeta, getToneClasses } from "@/lib/design/status";
 import { getMyComplaints } from "@/lib/services/complaints";
+import { isNotSignedIn } from "@/lib/services/errors";
 import type { Complaint } from "@/types/complaint";
 
 /**
@@ -55,8 +56,18 @@ export function NotificationPanel() {
         const data = await getMyComplaints();
         if (!cancelled) setComplaints(data);
       } catch (error) {
-        // A failed tray fetch must never break the header.
-        console.error("Failed to load notifications", error);
+        /*
+         * A failed tray fetch must never break the header.
+         *
+         * Being signed out is not a failure, and is expected here: the
+         * header renders before the session is established, and on a
+         * /citizen URL that has redirected to sign-in. It used to log
+         * "AuthSessionMissingError: Auth session missing!" with a stack
+         * trace on every such render.
+         */
+        if (!isNotSignedIn(error)) {
+          console.error("Failed to load notifications", error);
+        }
       } finally {
         if (!cancelled) setIsLoading(false);
       }
