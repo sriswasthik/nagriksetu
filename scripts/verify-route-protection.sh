@@ -129,6 +129,35 @@ echo "==> The removed debug route is gone"
 expect /api/test-supabase 404 -
 
 echo
+echo "==> The triage endpoint refuses an unauthenticated caller"
+#
+# A redirect would be wrong here as well as a 200: this is an API the
+# client calls with fetch(), and a 307 to the login page would arrive as
+# an HTML body the caller cannot interpret. It must answer 401.
+#
+# Checked separately from the routes above because it is a POST, and
+# because it is the one place where complaint text meets a language model
+# — if it ever answered without a session, anyone could classify, or
+# re-classify, anyone's complaint.
+for probe_body in '{"complaintId":"00000000-0000-0000-0000-000000000001"}' '{}' 'not json'; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -X POST -H 'Content-Type: application/json' \
+    --data "$probe_body" "$BASE/api/ai/analyze" 2>/dev/null || true)"
+
+  # 400 is acceptable for the malformed bodies — rejecting the request
+  # before authenticating leaks nothing. 200/202/307/500 are not.
+  case "$code" in
+    401|400)
+      printf 'ok   %-38s %s\n' "POST /api/ai/analyze" "$code"
+      ;;
+    *)
+      printf 'FAIL %-38s expected 401 or 400, got %s\n' "POST /api/ai/analyze" "$code"
+      failures=$((failures + 1))
+      ;;
+  esac
+done
+
+echo
 if [ "$failures" -ne 0 ]; then
   echo "$failures check(s) failed." >&2
   exit 1

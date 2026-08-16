@@ -9,6 +9,7 @@ import {
   ImageOff,
   Loader2,
   MapPin,
+  Sparkles,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -208,6 +209,67 @@ export default function WorkOrderDetailView() {
         }
         title={order.complaintTitle}
       />
+
+      {/*
+        ---------- Automatic assessment ----------
+
+        The persisted analysis, read from the complaint through the work
+        order join. Nothing is recomputed here: the officer sees exactly
+        what triage stored, and exactly what the citizen sees.
+      */}
+      {(order.analysis.summary || order.analysis.priorityReason) && (
+        <div className="mb-6 rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <div className="flex items-start gap-3">
+            <Sparkles
+              className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+              aria-hidden="true"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="text-xs font-semibold text-foreground">
+                  Automatic assessment
+                </p>
+
+                {order.analysis.possibleDuplicate && (
+                  <Badge variant="warning" className="text-[0.6875rem]">
+                    Possible duplicate
+                  </Badge>
+                )}
+              </div>
+
+              {order.analysis.summary && (
+                <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                  {order.analysis.summary}
+                </p>
+              )}
+
+              {order.analysis.priorityReason && (
+                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    Priority rationale:
+                  </span>{" "}
+                  {order.analysis.priorityReason}
+                </p>
+              )}
+
+              <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                {order.analysis.confidence !== null && (
+                  <span className="tabular">
+                    {Math.round(order.analysis.confidence * 100)}% confidence
+                  </span>
+                )}
+
+                {/*
+                  Provenance matters operationally: an officer weighs a
+                  keyword-engine guess differently from a model's reading,
+                  and previously both were recorded under one hardcoded name.
+                */}
+                {order.analysis.model && <span>via {order.analysis.model}</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ---------- Status strip ---------- */}
       <div className="mb-6 flex flex-wrap items-center gap-2 rounded-lg border bg-card p-4">

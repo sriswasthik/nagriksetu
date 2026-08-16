@@ -65,7 +65,14 @@ const WORK_ORDER_SELECT = `
     address,
     priority_score,
     priority_level,
+    priority_reason,
     sla_due_at,
+    ai_summary,
+    ai_category,
+    ai_confidence,
+    ai_possible_duplicate,
+    ai_duplicate_complaint_id,
+    ai_model,
     ward:wards!complaints_ward_id_fkey ( name )
   ),
   department:departments!work_orders_department_id_fkey ( id, name ),
@@ -98,7 +105,14 @@ interface WorkOrderRow {
     address: string | null;
     priority_score: number | null;
     priority_level: PriorityLevel | null;
+    priority_reason: string | null;
     sla_due_at: string | null;
+    ai_summary: string | null;
+    ai_category: string | null;
+    ai_confidence: number | null;
+    ai_possible_duplicate: boolean | null;
+    ai_duplicate_complaint_id: string | null;
+    ai_model: string | null;
     ward: { name: string | null } | null;
   } | null;
   department: { id: string; name: string | null } | null;
@@ -223,6 +237,22 @@ function mapWorkOrder(row: WorkOrderRow): WorkOrder {
     // work order, so it is read through the join.
     priorityScore: complaint?.priority_score ?? 0,
     priorityLevel: (complaint?.priority_level ?? "low") as PriorityLevel,
+
+    /*
+     * The persisted analysis, carried through so the officer sees what
+     * triage concluded. Read from the complaint row, never recomputed —
+     * an officer and a citizen looking at the same report must see the
+     * same assessment.
+     */
+    analysis: {
+      summary: complaint?.ai_summary ?? null,
+      category: complaint?.ai_category ?? null,
+      confidence: complaint?.ai_confidence ?? null,
+      priorityReason: complaint?.priority_reason ?? null,
+      possibleDuplicate: complaint?.ai_possible_duplicate ?? false,
+      duplicateComplaintId: complaint?.ai_duplicate_complaint_id ?? null,
+      model: complaint?.ai_model ?? null,
+    },
 
     location: {
       latitude: complaint?.latitude ?? 0,
