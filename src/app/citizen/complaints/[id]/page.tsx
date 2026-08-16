@@ -408,20 +408,67 @@ export default function ComplaintDetailsPage() {
               </div>
             </dl>
 
-            {/* AI reasoning, when the pipeline has produced one. */}
-            {complaint.priority_reason && (
-              <div className="mt-5 flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3.5">
-                <Sparkles
-                  className="mt-0.5 h-4 w-4 shrink-0 text-primary"
-                  aria-hidden="true"
-                />
-                <div>
-                  <p className="text-xs font-semibold text-foreground">
-                    Why this priority
-                  </p>
-                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                    {complaint.priority_reason}
-                  </p>
+            {/*
+              The persisted analysis, read from the complaint row.
+
+              Previously only priority_reason was shown, so the summary,
+              category and confidence the pipeline had stored were never
+              visible to anyone. Nothing here is recomputed in the browser
+              — every value is what the server wrote.
+            */}
+            {(complaint.ai_summary || complaint.priority_reason) && (
+              <div className="mt-5 rounded-lg border border-primary/20 bg-primary/5 p-3.5">
+                <div className="flex items-start gap-3">
+                  <Sparkles
+                    className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-foreground">
+                      Automatic assessment
+                    </p>
+
+                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                      {complaint.ai_summary ?? complaint.priority_reason}
+                    </p>
+
+                    {complaint.ai_summary && complaint.priority_reason && (
+                      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                        <span className="font-medium text-foreground">
+                          Why this priority:
+                        </span>{" "}
+                        {complaint.priority_reason}
+                      </p>
+                    )}
+
+                    <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {complaint.ai_category && (
+                        <span>
+                          Classified as{" "}
+                          <span className="font-medium text-foreground">
+                            {formatCategory(complaint.ai_category)}
+                          </span>
+                        </span>
+                      )}
+
+                      {/*
+                        Shown because a low number is information, not an
+                        embarrassment: it is the difference between "the
+                        city is confident" and "someone should look".
+                      */}
+                      {complaint.ai_confidence !== null && (
+                        <span className="tabular">
+                          {Math.round(complaint.ai_confidence * 100)}% confidence
+                        </span>
+                      )}
+
+                      {complaint.ai_processed_at && (
+                        <time dateTime={complaint.ai_processed_at}>
+                          {formatDateTime(complaint.ai_processed_at)}
+                        </time>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

@@ -83,6 +83,25 @@ export interface WorkOrder {
     address: string;
     ward?: string;
   };
+  /**
+   * The persisted AI analysis of the parent complaint.
+   *
+   * Carried on the work order so the officer view shows the same
+   * assessment the citizen sees. Nothing here is generated client-side;
+   * every field is read from public.complaints.
+   */
+  analysis: {
+    summary: string | null;
+    category: string | null;
+    /** 0-1, or null when the analysis recorded none. */
+    confidence: number | null;
+    priorityReason: string | null;
+    possibleDuplicate: boolean;
+    duplicateComplaintId: string | null;
+    /** Which engine produced it — a model name, or the rule engine's. */
+    model: string | null;
+  };
+
   citizenEvidence: ComplaintMedia[];
   resolutionEvidence: ComplaintMedia[];
   resolutionNotes?: string;
