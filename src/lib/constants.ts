@@ -17,14 +17,30 @@ export const COLORS = {
   background: '#F3F4F4',
 } as const;
 
-export const DEPARTMENTS = [
-  { id: 'dept-eng', name: 'Engineering', code: 'ENG' },
-  { id: 'dept-san', name: 'Sanitation', code: 'SAN' },
-  { id: 'dept-elec', name: 'Electrical', code: 'ELEC' },
-  { id: 'dept-water', name: 'Water Supply', code: 'WTR' },
-  { id: 'dept-roads', name: 'Roads & Infrastructure', code: 'RDS' },
-] as const;
+/*
+ * DEPARTMENTS was removed.
+ *
+ * It listed five departments keyed by the literals 'dept-eng',
+ * 'dept-san', 'dept-elec', 'dept-water' and 'dept-roads' with codes
+ * ENG/SAN/ELEC/WTR/RDS. None of that matched the database:
+ * public.departments is keyed by uuid, and the codes ai.ts resolves
+ * against are ROADS/SANITATION/WATER/DRAINAGE/ELECTRICAL/TRAFFIC/
+ * SAFETY/OTHER. Filtering a real work order by one of these ids could
+ * never match, so the authority queue's department filter silently
+ * returned nothing.
+ *
+ * Read departments from the database instead:
+ * referenceService.getDepartments() in src/lib/services/reference.ts.
+ */
 
+/**
+ * Service-level targets per priority, in hours.
+ *
+ * Kept in step with set_complaint_sla_due_at() in
+ * supabase/migrations/20260814120100_workflow_integrity_and_reference_data.sql,
+ * which is what actually stamps complaints.sla_due_at. This copy is for
+ * display only — changing it here does not change any deadline.
+ */
 export const SLA_HOURS: Record<string, number> = {
   critical: 24,
   high: 48,

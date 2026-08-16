@@ -11,7 +11,6 @@ import { PriorityBadge } from "@/components/shared/PriorityBadge";
 import { SLAIndicator } from "@/components/shared/SLAIndicator";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { FilterChips, type FilterOption } from "@/components/shared/FilterChips";
 import { MapSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -109,8 +108,6 @@ export default function GovernmentMapPage() {
           className="mb-6"
         />
       )}
-
-      <DemoDataNotice className="mb-6" />
 
       {workOrders.length === 0 && !error ? (
         <EmptyState

@@ -22,13 +22,17 @@ import type { Complaint } from "@/types/complaint";
  *
  * Derived from the citizen's real complaints rather than a mock
  * feed: each report's current status is a genuine, verifiable
- * update. There is no notifications table in the schema yet, so
- * inventing a stream of fake events would show the user things that
- * never happened.
+ * update.
+ *
+ * public.notifications does exist (and is now covered by a
+ * per-recipient RLS policy), but nothing in the product writes to it
+ * yet, so reading from it would show every citizen an empty inbox.
+ * Deriving the feed from complaint state is accurate today; switching
+ * to the table is worth doing once transitions emit rows.
  *
  * "Read" state is local to the session for the same reason — there is
- * nowhere to persist it. It is presented as grouping, not as a
- * synced inbox.
+ * nowhere to persist it until those rows exist. It is presented as
+ * grouping, not as a synced inbox.
  */
 
 /** Statuses worth telling the citizen about, most urgent first. */

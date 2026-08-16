@@ -17,7 +17,6 @@ import { PageHeader } from "@/components/shared/PageHeader";
 import { PriorityBadge } from "@/components/shared/PriorityBadge";
 import { SLAIndicator } from "@/components/shared/SLAIndicator";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { StaticLocationMap } from "@/components/map/StaticLocationMap";
 import { PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,7 +26,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { formatDateTime } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
-import { authService } from "@/lib/services/auth";
 import type { WorkOrder } from "@/types/workOrder";
 
 const RESOLUTION_NOTES_MIN = 5;
@@ -47,25 +45,19 @@ export default function WorkOrderDetailView() {
   const [proofPreview, setProofPreview] = useState<string | null>(null);
 
   /*
-   * Who is making the update. Carried over from main, which resolves
-   * this from the session rather than hardcoding a placeholder — the
-   * value lands in the work order's audit trail, so a stub would make
-   * that trail wrong.
+   * The author of an update is no longer resolved here: row-level
+   * security requires work_order_updates.created_by = auth.uid(), so
+   * the service reads it from the session. Resolving it in the page as
+   * well only created a race in which a slow profile lookup produced a
+   * placeholder id that the database then rejected.
    */
-  const [officerId, setOfficerId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const [data, user] = await Promise.all([
-        workOrderService.getWorkOrderById(id),
-        // Never let a failed profile lookup block the work order itself.
-        authService.getCurrentUser().catch(() => null),
-      ]);
-
-      if (user?.id) setOfficerId(user.id);
+      const data = await workOrderService.getWorkOrderById(id);
 
       if (!data) {
         setError("That work order could not be found.");
@@ -113,24 +105,24 @@ export default function WorkOrderDetailView() {
     setIsUpdating(true);
 
     try {
-      const media = proofPreview
-        ? [
-            {
-              id: `med_${Date.now()}`,
-              url: proofPreview,
-              type: "image" as const,
-              uploadedAt: new Date().toISOString(),
-            },
-          ]
-        : [];
+      /*
+       * Upload before the transition, not after: if storage rejects the
+       * photo, the work order must stay in `in_progress` so the officer
+       * can retry, rather than advancing to `proof_submitted` with
+       * nothing for the supervisor to verify.
+       */
+      if (proofFile) {
+        await workOrderService.uploadResolutionProof({
+          workOrderId: id,
+          file: proofFile,
+          description: notes.trim() || undefined,
+        });
+      }
 
       const updated = await workOrderService.updateWorkOrderStatus({
         workOrderId: id,
         status: newStatus,
         notes: notes.length > 0 ? notes : undefined,
-        media,
-        // Falls back only if the session could not be resolved.
-        updatedBy: officerId ?? "unknown-officer",
         timestamp: new Date().toISOString(),
       });
 
@@ -148,8 +140,15 @@ export default function WorkOrderDetailView() {
       toast.success(MESSAGES[newStatus] ?? "Work order updated");
     } catch (updateError) {
       console.error("Failed to update status", updateError);
+
+      // Upload and permission failures carry an actionable reason
+      // ("less than 10 MB", "must be signed in"); showing it beats
+      // "Please try again" on an error that retrying cannot fix.
       toast.error("Couldn't update the work order", {
-        description: "Please try again.",
+        description:
+          updateError instanceof Error && updateError.message
+            ? updateError.message
+            : "Please try again.",
       });
     } finally {
       setIsUpdating(false);
@@ -193,9 +192,7 @@ export default function WorkOrderDetailView() {
     );
   }
 
-  const isClosed = ["completed", "approved", "proof_submitted"].includes(
-    order.status
-  );
+  const isClosed = ["resolved", "proof_submitted"].includes(order.status);
   const canSubmitProof =
     Boolean(proofPreview) && notes.trim().length >= RESOLUTION_NOTES_MIN;
 
@@ -204,15 +201,13 @@ export default function WorkOrderDetailView() {
       <PageHeader
         breadcrumbs={[
           { label: "Work Orders", href: "/officer/work-orders" },
-          { label: order.id },
+          { label: order.workOrderNumber },
         ]}
         eyebrow={
-          <span className="font-mono text-sm text-muted-foreground">{order.id}</span>
+          <span className="font-mono text-sm text-muted-foreground">{order.workOrderNumber}</span>
         }
         title={order.complaintTitle}
       />
-
-      <DemoDataNotice className="mb-6" />
 
       {/* ---------- Status strip ---------- */}
       <div className="mb-6 flex flex-wrap items-center gap-2 rounded-lg border bg-card p-4">
@@ -612,7 +607,7 @@ export default function WorkOrderDetailView() {
               <div className="flex justify-between gap-3">
                 <dt className="text-muted-foreground">Source report</dt>
                 <dd className="font-mono text-xs text-foreground">
-                  {order.complaintId}
+                  {order.complaintNumber || order.complaintId}
                 </dd>
               </div>
             </dl>

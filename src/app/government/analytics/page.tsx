@@ -17,7 +17,6 @@ import {
 import { PageHeader } from "@/components/shared/PageHeader";
 import { StatCard } from "@/components/shared/StatCard";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import {
   ChartSkeleton,
   PageHeaderSkeleton,
@@ -121,8 +120,6 @@ export default function GovernmentAnalyticsPage() {
         title="Resolution Analytics"
         description="How quickly the city closes reports, and where that slows down."
       />
-
-      <DemoDataNotice className="mb-6" />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard

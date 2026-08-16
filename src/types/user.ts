@@ -1,4 +1,14 @@
-export type UserRole = 'citizen' | 'officer' | 'supervisor' | 'admin';
+/**
+ * Mirrors the PostgreSQL `public.user_role` enum. The final value is
+ * `government_admin`; the previous `admin` never existed in the
+ * database, so any comparison against it silently failed and every
+ * such user fell through to citizen-level access.
+ */
+export type UserRole =
+  | 'citizen'
+  | 'officer'
+  | 'supervisor'
+  | 'government_admin';
 
 export interface User {
   id: string;

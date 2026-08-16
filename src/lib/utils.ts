@@ -68,19 +68,15 @@ export function getPriorityColor(level: string): string {
 export function getStatusColor(status: string): string {
   switch (status) {
     case 'resolved':
-    case 'completed':
-    case 'approved':
     case 'verified':
       return 'text-emerald-700 bg-emerald-50 border-emerald-200';
     case 'in_progress':
     case 'accepted':
       return 'text-blue-700 bg-blue-50 border-blue-200';
     case 'submitted':
-    case 'created':
     case 'assigned':
       return 'text-amber-700 bg-amber-50 border-amber-200';
     case 'rejected':
-    case 'cancelled':
     case 'reopened':
       return 'text-red-700 bg-red-50 border-red-200';
     case 'supervisor_review':

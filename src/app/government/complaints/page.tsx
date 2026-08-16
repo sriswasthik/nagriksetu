@@ -16,7 +16,6 @@ import { PriorityBadge } from "@/components/shared/PriorityBadge";
 import { SLAIndicator } from "@/components/shared/SLAIndicator";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { FilterChips, type FilterOption } from "@/components/shared/FilterChips";
 import { StatCard } from "@/components/shared/StatCard";
 import { TableSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
@@ -32,7 +31,7 @@ import {
 } from "@/components/ui/select";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
-import { DEPARTMENTS } from "@/lib/constants";
+import { referenceService, type Department } from "@/lib/services/reference";
 import type { WorkOrder } from "@/types/workOrder";
 
 /**
@@ -54,8 +53,8 @@ type QueueFilter = "urgent" | "unassigned" | "active" | "review" | "all";
 const MATCHERS: Record<QueueFilter, (wo: WorkOrder) => boolean> = {
   urgent: (wo) =>
     ["critical", "high"].includes(wo.priorityLevel) &&
-    !["completed", "approved", "cancelled"].includes(wo.status),
-  unassigned: (wo) => wo.status === "created" || !wo.officerId,
+    wo.status !== "resolved",
+  unassigned: (wo) => !wo.officerId,
   active: (wo) => ["assigned", "accepted", "in_progress"].includes(wo.status),
   review: (wo) => ["proof_submitted", "supervisor_review"].includes(wo.status),
   all: () => true,
@@ -65,6 +64,7 @@ type SortKey = "urgency" | "newest" | "sla";
 
 export default function GovernmentIssueQueue() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -77,7 +77,16 @@ export default function GovernmentIssueQueue() {
     setError(null);
 
     try {
-      setWorkOrders(await workOrderService.getWorkOrders());
+      // The department filter compares against work_orders.department_id,
+      // so its options have to be the real uuid-keyed rows. A failed
+      // lookup only costs the filter, so it must not fail the queue.
+      const [orders, departmentRows] = await Promise.all([
+        workOrderService.getWorkOrders(),
+        referenceService.getDepartments().catch(() => []),
+      ]);
+
+      setWorkOrders(orders);
+      setDepartments(departmentRows);
     } catch (loadError) {
       console.error("Failed to load issue queue", loadError);
       setError("We couldn't load the issue queue. Please try again.");
@@ -117,7 +126,15 @@ export default function GovernmentIssueQueue() {
       if (department !== "all" && wo.departmentId !== department) return false;
       if (!query) return true;
 
-      return [wo.complaintTitle, wo.id, wo.location.address, wo.officerName]
+      // Search the identifiers actually shown on the card — nobody
+      // types a raw uuid into a queue search box.
+      return [
+        wo.complaintTitle,
+        wo.workOrderNumber,
+        wo.complaintNumber,
+        wo.location.address,
+        wo.officerName,
+      ]
         .filter(Boolean)
         .some((field) => String(field).toLowerCase().includes(query));
     });
@@ -139,7 +156,7 @@ export default function GovernmentIssueQueue() {
   const breaching = workOrders.filter(
     (wo) =>
       wo.slaHoursRemaining <= 0 &&
-      !["completed", "approved", "cancelled"].includes(wo.status)
+      wo.status !== "resolved"
   ).length;
 
   const hasFilters = search.trim() !== "" || department !== "all" || filter !== "urgent";
@@ -168,8 +185,6 @@ export default function GovernmentIssueQueue() {
           className="mb-6"
         />
       )}
-
-      <DemoDataNotice className="mb-6" />
 
       {/* ---------- Queue posture ---------- */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -239,7 +254,7 @@ export default function GovernmentIssueQueue() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All departments</SelectItem>
-                  {DEPARTMENTS.map((dept) => (
+                  {departments.map((dept) => (
                     <SelectItem key={dept.id} value={dept.id}>
                       {dept.name}
                     </SelectItem>
@@ -324,7 +339,7 @@ export default function GovernmentIssueQueue() {
           {rows.map((order) => {
             const isUrgent = ["critical", "high"].includes(order.priorityLevel);
             const isBreached = order.slaHoursRemaining <= 0;
-            const isClosed = ["completed", "approved"].includes(order.status);
+            const isClosed = order.status === "resolved";
 
             return (
               <li key={order.id}>
@@ -341,7 +356,7 @@ export default function GovernmentIssueQueue() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-xs text-muted-foreground">
-                          {order.id}
+                          {order.workOrderNumber}
                         </span>
                         <PriorityBadge
                           level={order.priorityLevel}

@@ -51,17 +51,20 @@ async function getAuthenticatedUserId(): Promise<string> {
  * ============================================================
  * COMPLAINT NUMBER
  * ============================================================
+ *
+ * Allocated by Postgres, not here.
+ *
+ * generateComplaintNumber() used to build `NS-<year>-<6 random digits>`
+ * in the browser and insert it into a `unique` column. Six random
+ * digits collide more often than not at around 1,100 complaints per
+ * year, and a collision fails the citizen's submission with an opaque
+ * 23505 that retrying cannot reliably fix.
+ *
+ * complaints_set_number (see
+ * supabase/migrations/20260814120400_complaint_number_sequence.sql) now
+ * fills the column from a sequence on insert, so the number is unique
+ * by construction and this insert simply omits it.
  */
-
-function generateComplaintNumber(): string {
-  const year = new Date().getFullYear();
-
-  const randomPart = Math.floor(
-    100000 + Math.random() * 900000
-  );
-
-  return `NS-${year}-${randomPart}`;
-}
 
 /**
  * ============================================================
@@ -77,15 +80,9 @@ export async function createComplaint(
   const citizenId =
     await getAuthenticatedUserId();
 
-  const complaintNumber =
-    generateComplaintNumber();
-
   const { data, error } = await supabase
     .from("complaints")
     .insert({
-      complaint_number:
-        complaintNumber,
-
       citizen_id:
         citizenId,
 
