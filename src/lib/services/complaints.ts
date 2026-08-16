@@ -1,5 +1,9 @@
 import { createClient } from "@/lib/supabase/client";
-import { NotSignedInError, toActionableError } from "@/lib/services/errors";
+import {
+  NotSignedInError,
+  isMissingDatabaseObject,
+  toActionableError,
+} from "@/lib/services/errors";
 
 import type {
   Complaint,
@@ -15,6 +19,12 @@ const EVIDENCE_BUCKET = "complaint-evidence";
 export const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
 const SIGNED_URL_TTL_SECONDS = 3600;
+
+/** How far back the degraded path looks for an accidental resubmission. */
+const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
+
+/** ~11 m at the equator — the same pin, allowing for float noise. */
+const COORDINATE_EPSILON = 0.0001;
 
 export const ALLOWED_IMAGE_TYPES = [
   "image/jpeg",
@@ -158,10 +168,12 @@ async function getAuthenticatedUserId(): Promise<string> {
  * year, and a collision fails the citizen's submission with an opaque
  * 23505 that retrying cannot reliably fix.
  *
- * complaints_set_number (see
- * supabase/migrations/20260814120400_complaint_number_sequence.sql) now
- * fills the column from a sequence on insert, so the number is unique
- * by construction and this insert simply omits it.
+ * The number now comes from complaint_number_seq, via either the column
+ * default or the complaints_set_number trigger (see
+ * 20260814120400 and 20260814120900), so this module normally omits it.
+ *
+ * fallbackComplaintNumber() below is the one exception, for a database
+ * that has neither — see submitThroughInsert().
  */
 
 /**
@@ -169,8 +181,7 @@ async function getAuthenticatedUserId(): Promise<string> {
  * CREATE COMPLAINT
  * ============================================================
  *
- * Goes through submit_complaint() rather than inserting directly, for
- * three reasons:
+ * Prefers submit_complaint(), for three reasons:
  *
  *   1. **Idempotency.** The function keys on `submission_key`, so a
  *      retry after a lost response returns the complaint that already
@@ -178,18 +189,75 @@ async function getAuthenticatedUserId(): Promise<string> {
  *      twice: the insert succeeded, the response never arrived, the form
  *      showed an error, and the citizen pressed Submit again.
  *
- *   2. **Validation that a direct API call cannot skip.** Title and
+ *   2. **Validation a direct API call cannot skip.** Title and
  *      description lengths, coordinate ranges, and a 0,0 guard — a
  *      failed GPS read looks exactly like Null Island, and storing it
  *      sends a crew to the Gulf of Guinea.
  *
  *   3. **Identity.** citizen_id comes from auth.uid() inside the
  *      function and is never accepted as an argument.
+ *
+ * ...and falls back to a direct insert when that function is not in the
+ * database.
+ *
+ * The fallback exists because a real deployment could not file a single
+ * report: the schema was the original one, submit_complaint() had never
+ * been created, and the citizen got told to run a CLI command. An app
+ * that degrades is better than an app that stops, provided the
+ * degradation is bounded and visible — so the checks the function would
+ * have applied are applied here instead, and the console says plainly
+ * what was lost.
  */
 
 export async function createComplaint(
   input: CreateComplaintInput
 ): Promise<Complaint> {
+  /*
+   * Validated here as well as in the database. submit_complaint() is the
+   * authority — a direct API call never sees this — but the fallback path
+   * below does not go through it, and must not become a way to store a
+   * report the rules would reject.
+   */
+  const invalid = validateComplaintInput(input);
+
+  if (invalid) {
+    throw new Error(invalid);
+  }
+
+  const viaFunction = await submitThroughFunction(input);
+
+  if (viaFunction.outcome === "filed") {
+    return viaFunction.complaint;
+  }
+
+  /*
+   * The function is not there. Rather than leaving the citizen unable to
+   * file anything, insert directly — the table, its RLS policies and the
+   * citizen's own permission to insert all predate submit_complaint().
+   *
+   * This is a genuine downgrade and is logged as one: server-side
+   * validation is replaced by the check above, and idempotency by the
+   * recent-duplicate lookup in submitThroughInsert(). Whoever deployed
+   * this should run supabase/bootstrap.sql.
+   */
+  console.warn(
+    "submit_complaint() is unavailable in this database, so this report " +
+      "was filed with a direct insert. Idempotency and server-side " +
+      "validation are reduced. Run supabase/bootstrap.sql to restore them.",
+    viaFunction.reason
+  );
+
+  return submitThroughInsert(input);
+}
+
+type FunctionSubmission =
+  | { outcome: "filed"; complaint: Complaint }
+  | { outcome: "unavailable"; reason: string };
+
+/** The intended path: one statement, idempotent, validated in Postgres. */
+async function submitThroughFunction(
+  input: CreateComplaintInput
+): Promise<FunctionSubmission> {
   const supabase = createClient();
 
   const { data, error } = await supabase.rpc("submit_complaint", {
@@ -205,17 +273,28 @@ export async function createComplaint(
 
   if (error) {
     /*
-     * Normalised rather than rethrown. A PostgrestError is a plain
-     * object, so `instanceof Error` was false at every call site and the
-     * real reason never reached the citizen — a missing-migration
-     * constraint violation showed up as "Failed to submit report: {}".
+     * A missing function is recoverable — the caller falls back. Anything
+     * else is the database rejecting this particular report, and must
+     * reach the citizen rather than being retried a different way.
      */
+    if (isMissingDatabaseObject(error)) {
+      return {
+        outcome: "unavailable",
+        reason: error.message,
+      };
+    }
+
     const actionable = toActionableError(
       error,
       "We couldn't file your report. Please try again."
     );
 
-    console.error("Create complaint error:", actionable.message, error);
+    console.error("Create complaint error:", actionable.message, {
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+    });
+
     throw actionable;
   }
 
@@ -231,7 +310,260 @@ export async function createComplaint(
    * results as unknown, so the cast is unavoidable — but the shape is
    * `public.complaints`, guaranteed by the function's RETURNS clause.
    */
-  return data as Complaint;
+  return { outcome: "filed", complaint: data as Complaint };
+}
+
+/**
+ * The degraded path, for a database that predates submit_complaint().
+ *
+ * Three things have to be discovered rather than assumed, because the
+ * point of this path is that we do not know how old the schema is:
+ *
+ *   - whether `submission_key` exists (42703 if not)
+ *   - whether the complaint number is assigned by the database (23502 if
+ *     neither the default nor the trigger is there)
+ *   - whether a previous attempt already succeeded
+ *
+ * Each retry is driven by a specific error code, never blind.
+ */
+async function submitThroughInsert(
+  input: CreateComplaintInput
+): Promise<Complaint> {
+  const supabase = createClient();
+  const citizenId = await getAuthenticatedUserId();
+
+  /*
+   * Stands in for the idempotency submit_complaint() gets from the unique
+   * index. Without it, a retry after a lost response files the report
+   * twice — which is the specific failure the submission key was
+   * introduced to stop, and it should not come back just because the
+   * database is old.
+   */
+  const existing = await findRecentDuplicate(input, citizenId);
+
+  if (existing) {
+    console.warn(
+      "A matching report was filed moments ago; returning it instead of " +
+        "creating a second one."
+    );
+    return existing;
+  }
+
+  const base: Record<string, unknown> = {
+    citizen_id: citizenId,
+    title: input.title.trim(),
+    description: input.description.trim(),
+    category: input.category ?? "other",
+    status: "submitted",
+    latitude: input.latitude,
+    longitude: input.longitude,
+    address: input.address?.trim() ?? null,
+    ward_id: input.wardId ?? null,
+  };
+
+  // Attempt 1: current schema, minus the function.
+  let attempt = await insertComplaint(supabase, {
+    ...base,
+    submission_key: input.submissionKey,
+  });
+
+  // 42703 — no submission_key column, so this schema predates it.
+  if (attempt.error && attempt.error.code === "42703") {
+    attempt = await insertComplaint(supabase, base);
+  }
+
+  /*
+   * 23502 on complaint_number — neither the column default nor the
+   * numbering trigger is present, so the number has to come from here.
+   * Last resort only: a client-generated number cannot draw from the
+   * sequence, so it uses enough entropy that a collision is negligible
+   * and, if one does happen, the unique index rejects it rather than
+   * issuing a duplicate.
+   */
+  if (
+    attempt.error &&
+    attempt.error.code === "23502" &&
+    attempt.error.message?.includes("complaint_number")
+  ) {
+    console.warn(
+      "This database assigns no complaint number, so one was generated " +
+        "client-side. Run supabase/bootstrap.sql — the sequence is what " +
+        "guarantees these are unique."
+    );
+
+    attempt = await insertComplaint(supabase, {
+      ...base,
+      ...(attempt.triedSubmissionKey
+        ? { submission_key: input.submissionKey }
+        : {}),
+      complaint_number: fallbackComplaintNumber(),
+    });
+  }
+
+  if (attempt.error) {
+    const actionable = toActionableError(
+      attempt.error,
+      "We couldn't file your report. Please try again."
+    );
+
+    console.error("Create complaint error:", actionable.message, {
+      code: attempt.error.code,
+      details: attempt.error.details,
+      hint: attempt.error.hint,
+    });
+
+    throw actionable;
+  }
+
+  if (!attempt.data) {
+    throw new Error(
+      "Your report may not have been saved — the server did not confirm it. " +
+        "Check your reports before submitting again."
+    );
+  }
+
+  return attempt.data;
+}
+
+interface InsertAttempt {
+  data: Complaint | null;
+  error: { code?: string; message?: string; details?: string; hint?: string } | null;
+  triedSubmissionKey: boolean;
+}
+
+async function insertComplaint(
+  supabase: ReturnType<typeof createClient>,
+  row: Record<string, unknown>
+): Promise<InsertAttempt> {
+  const { data, error } = await supabase
+    .from("complaints")
+    .insert(row)
+    .select("*")
+    .single();
+
+  return {
+    data: (data as Complaint | null) ?? null,
+    error,
+    triedSubmissionKey: "submission_key" in row,
+  };
+}
+
+/**
+ * A report this citizen filed in the last few minutes with the same title
+ * and location.
+ *
+ * Deliberately narrow. It is not trying to detect two people reporting the
+ * same pothole — that is what ai_possible_duplicate is for — only the same
+ * form being submitted twice because the first response was lost.
+ */
+async function findRecentDuplicate(
+  input: CreateComplaintInput,
+  citizenId: string
+): Promise<Complaint | null> {
+  const supabase = createClient();
+
+  const since = new Date(Date.now() - DUPLICATE_WINDOW_MS).toISOString();
+
+  const { data, error } = await supabase
+    .from("complaints")
+    .select("*")
+    .eq("citizen_id", citizenId)
+    .eq("title", input.title.trim())
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (error) {
+    // Not being able to check is not a reason to refuse the submission.
+    console.error("Duplicate pre-check failed:", error.message);
+    return null;
+  }
+
+  const candidate = (data?.[0] as Complaint | undefined) ?? null;
+
+  if (!candidate) return null;
+
+  const sameSpot =
+    input.latitude !== null &&
+    input.longitude !== null &&
+    candidate.latitude !== null &&
+    candidate.longitude !== null &&
+    Math.abs(candidate.latitude - input.latitude) < COORDINATE_EPSILON &&
+    Math.abs(candidate.longitude - input.longitude) < COORDINATE_EPSILON;
+
+  return sameSpot ? candidate : null;
+}
+
+/**
+ * Mirrors the validation in submit_complaint().
+ *
+ * Returns the message to show, or null when the input is acceptable. The
+ * wording matches the database's so a citizen sees the same thing however
+ * their report was routed.
+ */
+export function validateComplaintInput(
+  input: CreateComplaintInput
+): string | null {
+  const title = input.title?.trim() ?? "";
+  const description = input.description?.trim() ?? "";
+  const address = input.address?.trim() ?? "";
+
+  if (title.length < 5) {
+    return "A report needs a title of at least 5 characters.";
+  }
+
+  if (title.length > 150) {
+    return "That title is too long (150 characters maximum).";
+  }
+
+  if (description.length < 10) {
+    return "A report needs a description of at least 10 characters.";
+  }
+
+  if (description.length > 2000) {
+    return "That description is too long (2000 characters maximum).";
+  }
+
+  if (input.latitude === null || input.longitude === null) {
+    return "A report needs a location.";
+  }
+
+  if (!Number.isFinite(input.latitude) || !Number.isFinite(input.longitude)) {
+    return "Those coordinates aren't valid. Please place the pin again.";
+  }
+
+  if (input.latitude < -90 || input.latitude > 90) {
+    return "Latitude must be between -90 and 90.";
+  }
+
+  if (input.longitude < -180 || input.longitude > 180) {
+    return "Longitude must be between -180 and 180.";
+  }
+
+  if (input.latitude === 0 && input.longitude === 0) {
+    return "Those coordinates look like a failed location read. Capture the location again or place the pin on the map.";
+  }
+
+  if (address.length < 5) {
+    return "A report needs an address or nearby landmark.";
+  }
+
+  return null;
+}
+
+/**
+ * A tracking number for the case where the database assigns none.
+ *
+ * Twelve digits from crypto randomness rather than the sequence's six,
+ * because without the sequence there is no coordination between clients —
+ * the only defence against a collision is the size of the space, and the
+ * unique index behind it.
+ */
+function fallbackComplaintNumber(): string {
+  const random = crypto.getRandomValues(new Uint32Array(2));
+  const digits = `${random[0]}${random[1]}`.slice(0, 12).padEnd(12, "0");
+
+  return `NS-${new Date().getFullYear()}-${digits}`;
 }
 
 /**
