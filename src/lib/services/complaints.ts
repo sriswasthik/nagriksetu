@@ -4,21 +4,91 @@ import type {
   Complaint,
   ComplaintMedia,
   ComplaintStatus,
+  ComplaintStatusEvent,
   CreateComplaintInput,
   UpdateComplaintInput,
 } from "@/types/complaint";
 
 const EVIDENCE_BUCKET = "complaint-evidence";
 
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+export const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
-const ALLOWED_IMAGE_TYPES = [
+const SIGNED_URL_TTL_SECONDS = 3600;
+
+export const ALLOWED_IMAGE_TYPES = [
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/heic",
   "image/heif",
 ];
+
+/**
+ * Maps an extension onto the MIME type Storage expects.
+ *
+ * Needed because plenty of Android browsers, and iOS with HEIC, hand
+ * back a File whose `type` is the empty string. The picker accepted
+ * those by extension while this module required a MIME match, so a photo
+ * could pass validation in the form and then be rejected at upload —
+ * after the complaint had already been created. Both sides now use
+ * validateEvidenceFile(), and the resolved type is what gets sent, so
+ * the bucket's allowed_mime_types check sees something valid too.
+ */
+const MIME_FOR_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+};
+
+export interface EvidenceFileCheck {
+  ok: boolean;
+  /** Human-readable reason, when not ok. */
+  reason?: string;
+  /** The MIME type to upload with — resolved from the extension when the browser gave none. */
+  contentType?: string;
+}
+
+/**
+ * The single rule for what counts as acceptable evidence.
+ *
+ * Exported so the picker rejects a file before the citizen fills in the
+ * rest of the form, rather than after their report has been filed.
+ */
+export function validateEvidenceFile(file: File): EvidenceFileCheck {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+
+  const contentType =
+    ALLOWED_IMAGE_TYPES.includes(file.type)
+      ? file.type
+      : MIME_FOR_EXTENSION[extension];
+
+  if (!contentType) {
+    return {
+      ok: false,
+      reason:
+        "That file isn't a supported image. Please choose a JPG, PNG, WEBP or HEIC photo.",
+    };
+  }
+
+  if (file.size <= 0) {
+    return {
+      ok: false,
+      reason: "That image appears to be empty. Please choose another.",
+    };
+  }
+
+  if (file.size > MAX_IMAGE_SIZE) {
+    return {
+      ok: false,
+      reason: `That photo is ${(file.size / 1024 / 1024).toFixed(1)} MB. Please choose one under 10 MB.`,
+    };
+  }
+
+  return { ok: true, contentType };
+}
 
 /**
  * ============================================================
@@ -70,6 +140,23 @@ async function getAuthenticatedUserId(): Promise<string> {
  * ============================================================
  * CREATE COMPLAINT
  * ============================================================
+ *
+ * Goes through submit_complaint() rather than inserting directly, for
+ * three reasons:
+ *
+ *   1. **Idempotency.** The function keys on `submission_key`, so a
+ *      retry after a lost response returns the complaint that already
+ *      exists. Previously a flaky connection could file the same issue
+ *      twice: the insert succeeded, the response never arrived, the form
+ *      showed an error, and the citizen pressed Submit again.
+ *
+ *   2. **Validation that a direct API call cannot skip.** Title and
+ *      description lengths, coordinate ranges, and a 0,0 guard — a
+ *      failed GPS read looks exactly like Null Island, and storing it
+ *      sends a crew to the Gulf of Guinea.
+ *
+ *   3. **Identity.** citizen_id comes from auth.uid() inside the
+ *      function and is never accepted as an argument.
  */
 
 export async function createComplaint(
@@ -77,54 +164,31 @@ export async function createComplaint(
 ): Promise<Complaint> {
   const supabase = createClient();
 
-  const citizenId =
-    await getAuthenticatedUserId();
-
-  const { data, error } = await supabase
-    .from("complaints")
-    .insert({
-      citizen_id:
-        citizenId,
-
-      title:
-        input.title.trim(),
-
-      description:
-        input.description.trim(),
-
-      category:
-        input.category ?? "other",
-
-      status:
-        "submitted",
-
-      latitude:
-        input.latitude ?? null,
-
-      longitude:
-        input.longitude ?? null,
-
-      address:
-        input.address ?? null,
-
-      ward_id:
-        input.wardId ?? null,
-
-      department_id:
-        input.departmentId ?? null,
-    })
-    .select("*")
-    .single();
+  const { data, error } = await supabase.rpc("submit_complaint", {
+    p_submission_key: input.submissionKey,
+    p_title: input.title,
+    p_description: input.description,
+    p_category: input.category ?? "other",
+    p_latitude: input.latitude,
+    p_longitude: input.longitude,
+    p_address: input.address,
+    p_ward_id: input.wardId ?? null,
+  });
 
   if (error) {
-    console.error(
-      "Create complaint error:",
-      error.message
-    );
-
-    throw error;
+    console.error("Create complaint error:", error.message);
+    throw new Error(error.message || "We couldn't file your report.");
   }
 
+  if (!data) {
+    throw new Error("The report was not returned after submission.");
+  }
+
+  /*
+   * The function returns a single composite row. supabase-js types RPC
+   * results as unknown, so the cast is unavoidable — but the shape is
+   * `public.complaints`, guaranteed by the function's RETURNS clause.
+   */
   return data as Complaint;
 }
 
@@ -362,30 +426,17 @@ export async function uploadComplaintEvidence(
    * ----------------------------------------------------------
    * FILE VALIDATION
    * ----------------------------------------------------------
+   *
+   * The same check the picker runs, so a photo that was accepted in the
+   * form cannot be rejected here — which used to happen after the
+   * complaint had already been created, leaving a report with no
+   * evidence and a confusing error.
    */
 
-  if (file.size <= 0) {
-    throw new Error(
-      "The selected image is empty."
-    );
-  }
+  const check = validateEvidenceFile(file);
 
-  if (
-    file.size > MAX_IMAGE_SIZE
-  ) {
-    throw new Error(
-      "Image size must be less than 10 MB."
-    );
-  }
-
-  if (
-    !ALLOWED_IMAGE_TYPES.includes(
-      file.type
-    )
-  ) {
-    throw new Error(
-      "Unsupported image format. Please upload JPG, PNG, WEBP, HEIC or HEIF."
-    );
+  if (!check.ok || !check.contentType) {
+    throw new Error(check.reason ?? "That photo cannot be uploaded.");
   }
 
   /**
@@ -422,7 +473,7 @@ export async function uploadComplaintEvidence(
       file,
       {
         cacheControl: "3600",
-        contentType: file.type,
+        contentType: check.contentType,
         upsert: false,
       }
     );
@@ -472,7 +523,7 @@ export async function uploadComplaintEvidence(
         file.name,
 
       file_type:
-        file.type,
+        check.contentType,
 
       uploaded_by:
         userId,
@@ -717,10 +768,13 @@ export async function deleteComplaintEvidence(
  * GET COMPLETE COMPLAINT DETAILS
  * ============================================================
  *
- * Fetches:
- * - Complaint
- * - Complaint media
- * - Signed URLs for private evidence
+ * One call for everything the detail page renders, so the page has no
+ * partial states to reason about:
+ *
+ *   - the complaint
+ *   - its evidence, with signed URLs
+ *   - the department NAME, not the uuid
+ *   - the recorded status history
  */
 
 export interface ComplaintDetails {
@@ -728,41 +782,107 @@ export interface ComplaintDetails {
 
   media: Array<
     ComplaintMedia & {
-      signedUrl: string;
+      /** Null when the object could not be signed — a missing file, not a page failure. */
+      signedUrl: string | null;
     }
   >;
+
+  /**
+   * Resolved from departments.name.
+   *
+   * The page previously rendered `formatCategory(complaint.department_id)`,
+   * which put a raw uuid — "Cd0106C4 71F5 4Ab4 A38E Fe8F457Ec047" — in
+   * front of the citizen as the responsible department.
+   */
+  departmentName: string | null;
+
+  /** Oldest first, straight from complaint_status_history. */
+  history: ComplaintStatusEvent[];
 }
 
 export async function getComplaintDetails(
   complaintId: string
 ): Promise<ComplaintDetails> {
-  const complaint =
-    await getComplaintById(
-      complaintId
-    );
+  const supabase = createClient();
 
-  const media =
-    await getComplaintMedia(
-      complaintId
-    );
+  const complaint = await getComplaintById(complaintId);
 
-  const mediaWithUrls =
-    await Promise.all(
-      media.map(async (item) => {
-        const signedUrl =
-          await getComplaintMediaUrl(
-            item.storage_path
-          );
+  /*
+   * Everything else is independent of everything else, so it goes in
+   * parallel. Each branch is individually recoverable: a missing
+   * department name or an unreadable history must not blank the page,
+   * because the complaint itself is the thing the citizen came for.
+   */
+  const [media, historyResult, departmentResult] = await Promise.all([
+    getComplaintMedia(complaintId),
 
-        return {
-          ...item,
-          signedUrl,
-        };
-      })
+    supabase
+      .from("complaint_status_history")
+      .select("id, status, note, created_at")
+      .eq("complaint_id", complaintId)
+      .order("created_at", { ascending: true }),
+
+    complaint.department_id
+      ? supabase
+          .from("departments")
+          .select("name")
+          .eq("id", complaint.department_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]);
+
+  if (historyResult.error) {
+    console.error(
+      "Status history unavailable:",
+      historyResult.error.message
     );
+  }
+
+  if (departmentResult.error) {
+    console.error(
+      "Department lookup failed:",
+      departmentResult.error.message
+    );
+  }
+
+  /*
+   * Signed in one round trip rather than one per photo, and a single
+   * unsignable object drops that photo instead of throwing. Previously
+   * one missing file failed getComplaintDetails() outright, so the whole
+   * report became unviewable.
+   */
+  const signed = new Map<string, string>();
+
+  if (media.length > 0) {
+    const { data, error } = await supabase.storage
+      .from(EVIDENCE_BUCKET)
+      .createSignedUrls(
+        media.map((item) => item.storage_path),
+        SIGNED_URL_TTL_SECONDS
+      );
+
+    if (error) {
+      console.error("Signing evidence URLs failed:", error.message);
+    }
+
+    for (const entry of data ?? []) {
+      if (entry.path && entry.signedUrl) {
+        signed.set(entry.path, entry.signedUrl);
+      }
+    }
+  }
 
   return {
     complaint,
-    media: mediaWithUrls,
+
+    media: media.map((item) => ({
+      ...item,
+      signedUrl: signed.get(item.storage_path) ?? null,
+    })),
+
+    departmentName:
+      (departmentResult.data as { name?: string } | null)?.name ?? null,
+
+    history: (historyResult.data ?? []) as ComplaintStatusEvent[],
   };
 }

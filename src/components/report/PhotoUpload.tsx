@@ -1,14 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { Camera, ImagePlus, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-
-const MAX_SIZE = 10 * 1024 * 1024;
-
-const ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "heic", "heif"];
+import { validateEvidenceFile } from "@/lib/services/complaints";
 
 interface PhotoUploadProps {
   file: File | null;
@@ -31,6 +28,17 @@ interface PhotoUploadProps {
  *  - Extension fallback for devices that report an empty MIME type.
  *
  * Adds drag-and-drop on pointer devices and inline validation.
+ *
+ * Validation is validateEvidenceFile() from the complaints service —
+ * the same function the upload runs. This component used to accept a
+ * file by extension when the browser reported no MIME type, while the
+ * upload required a MIME match, so an iPhone HEIC could pass here and be
+ * rejected later, after the complaint had already been filed.
+ *
+ * It also no longer revokes previewUrl. It does not own that URL: the
+ * report page does, and the cleanup fired whenever the wizard left this
+ * step — leaving the review screen showing a revoked blob: URL as a
+ * broken image.
  */
 export function PhotoUpload({
   file,
@@ -44,13 +52,6 @@ export function PhotoUpload({
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Release the object URL when the preview changes or unmounts.
-  useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
-
   function openPicker() {
     if (disabled) return;
 
@@ -62,30 +63,14 @@ export function PhotoUpload({
   }
 
   function validateAndAccept(candidate: File) {
+    const check = validateEvidenceFile(candidate);
+
+    if (!check.ok) {
+      setError(check.reason ?? "That photo cannot be used.");
+      return;
+    }
+
     setError(null);
-
-    const extension = candidate.name.split(".").pop()?.toLowerCase() || "";
-    const isImage =
-      candidate.type.startsWith("image/") ||
-      ALLOWED_EXTENSIONS.includes(extension);
-
-    if (!isImage) {
-      setError("That file isn't an image. Please choose a JPG, PNG, WEBP or HEIC photo.");
-      return;
-    }
-
-    if (candidate.size <= 0) {
-      setError("That image appears to be empty. Please choose another.");
-      return;
-    }
-
-    if (candidate.size > MAX_SIZE) {
-      setError(
-        `That photo is ${(candidate.size / 1024 / 1024).toFixed(1)} MB. Please choose one under 10 MB.`
-      );
-      return;
-    }
-
     onSelect(candidate, URL.createObjectURL(candidate));
   }
 

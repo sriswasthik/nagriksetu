@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2, LocateFixed, MapPin, Navigation } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -55,11 +55,25 @@ export function LocationPicker({
   const [isLocating, setIsLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
 
+  /*
+   * Sequence number for reverse-geocode lookups.
+   *
+   * Each pin move fires a lookup and applies the result. Two quick drags
+   * meant two in-flight requests, and if the first resolved second it
+   * re-applied its own (older) coordinates — silently moving the pin back
+   * and submitting the wrong location. Only the newest lookup may write.
+   */
+  const lookupSequence = useRef(0);
+
   const hasPosition = latitude !== null && longitude !== null;
 
   async function captureLocation() {
     setIsLocating(true);
     setLocationError(null);
+
+    // Supersedes any pin lookup still in flight, so its address cannot
+    // land on top of the GPS fix.
+    lookupSequence.current += 1;
 
     try {
       const location = await detectDeviceLocation();
@@ -82,10 +96,19 @@ export function LocationPicker({
 
   /** Pin moved — re-resolve the address, but keep the coordinates authoritative. */
   async function handlePinMove(lat: number, lng: number) {
+    // Applied immediately: the pin is where the user put it, whatever
+    // the address lookup goes on to say.
     onLocationChange({ latitude: lat, longitude: lng });
+
+    lookupSequence.current += 1;
+    const sequence = lookupSequence.current;
 
     try {
       const resolved = await reverseGeocode(lat, lng);
+
+      // A newer move has happened; this result is stale.
+      if (sequence !== lookupSequence.current) return;
+
       onLocationChange({ latitude: lat, longitude: lng, address: resolved.address });
     } catch {
       // Coordinates are what matter; a failed lookup is not an error

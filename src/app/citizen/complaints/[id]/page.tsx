@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
+  AlertTriangle,
   Building2,
   Clock3,
   FileText,
@@ -48,15 +49,21 @@ export default function ComplaintDetailsPage() {
         ? params.id[0]
         : "";
 
-  const shouldProcessAI = searchParams.get("process") === "ai";
+  /*
+   * ?process=ai is still honoured for the arrival straight from
+   * submission, but it is no longer what decides whether triage runs —
+   * see the effect below.
+   */
+  const arrivedFromSubmission = searchParams.get("process") === "ai";
 
   const [details, setDetails] = useState<ComplaintDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [triageError, setTriageError] = useState<string | null>(null);
 
-  // Guards the one-shot AI trigger against StrictMode double-invoke.
+  // One triage attempt per mount; also guards StrictMode double-invoke.
   const aiTriggered = useRef(false);
 
   const loadDetails = useCallback(
@@ -78,6 +85,7 @@ export default function ComplaintDetailsPage() {
       try {
         const result = await getComplaintDetails(complaintId);
         setDetails(result);
+        return result;
       } catch (loadError) {
         console.error("Failed to load complaint details:", loadError);
         setError(
@@ -95,47 +103,85 @@ export default function ComplaintDetailsPage() {
     loadDetails();
   }, [loadDetails]);
 
+  const runTriage = useCallback(async () => {
+    setIsAnalyzing(true);
+    setTriageError(null);
+
+    try {
+      const result = await processComplaintWithAI(complaintId);
+
+      if (!result.success) {
+        setTriageError(
+          result.error ?? "Triage did not complete. You can try again."
+        );
+      }
+    } catch (aiError) {
+      console.error("AI analysis failed:", aiError);
+      setTriageError(
+        aiError instanceof Error && aiError.message
+          ? aiError.message
+          : "Triage did not complete. You can try again."
+      );
+    } finally {
+      // Reload either way: a failure still records ai_analysis_status,
+      // and the page must show the real database state, not an
+      // optimistic guess about it.
+      await loadDetails(false);
+      setIsAnalyzing(false);
+    }
+  }, [complaintId, loadDetails]);
+
   /*
-   * Run the AI triage pass when arriving straight from submission.
+   * Triage runs whenever a report has not been through it.
    *
-   * The previous implementation imported processComplaintWithAI and
-   * read ?process=ai but never actually called it, so newly created
-   * reports were left with ai_analysis_status unset. This wires the
-   * existing pipeline up and reflects it in the UI.
+   * It used to require ?process=ai, which is only present when the
+   * citizen taps "Track this issue" straight after submitting. Anyone who
+   * closed the tab, or opened the report later from their list, left it
+   * untriaged for good: no priority, no SLA deadline, and department_id
+   * null, so it was never routed to anyone. The query param now only
+   * affects whether the URL is tidied afterwards.
+   *
+   * `pending` and `failed` are both retried; `processing` is left alone
+   * and polled instead, since another tab may be mid-run.
    */
   useEffect(() => {
-    if (!shouldProcessAI || !complaintId || aiTriggered.current) return;
-    if (!details) return;
+    if (!details || aiTriggered.current) return;
 
-    // Only triage a report that has not been through it yet.
-    if (details.complaint.status !== "submitted") return;
+    const status = details.complaint.ai_analysis_status;
+    const needsTriage = status === null || status === "pending" || status === "failed";
+
+    if (!needsTriage) return;
 
     aiTriggered.current = true;
 
-    let cancelled = false;
-
-    (async () => {
-      setIsAnalyzing(true);
-
-      try {
-        await processComplaintWithAI(complaintId);
-        if (!cancelled) await loadDetails(false);
-      } catch (aiError) {
-        // Triage is best-effort; the report itself is already saved.
-        console.error("AI analysis failed:", aiError);
-      } finally {
-        if (!cancelled) {
-          setIsAnalyzing(false);
-          // Drop the query param so a refresh does not re-trigger.
-          router.replace(`/citizen/complaints/${complaintId}`, { scroll: false });
-        }
+    void runTriage().finally(() => {
+      if (arrivedFromSubmission) {
+        // Drop the param so a manual refresh reads as an ordinary visit.
+        router.replace(`/citizen/complaints/${complaintId}`, { scroll: false });
       }
-    })();
+    });
+  }, [details, runTriage, arrivedFromSubmission, complaintId, router]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [shouldProcessAI, complaintId, details, loadDetails, router]);
+  /*
+   * Poll while triage is running elsewhere.
+   *
+   * processComplaintWithAI marks the row `processing` before it starts,
+   * so a second tab — or this tab after a reload mid-run — can watch for
+   * completion rather than starting a competing pass that
+   * apply_complaint_triage() would refuse anyway.
+   */
+  const isProcessingElsewhere =
+    details?.complaint.ai_analysis_status === "processing" && !isAnalyzing;
+
+  useEffect(() => {
+    if (!isProcessingElsewhere) return;
+
+    const timer = setInterval(() => {
+      void loadDetails(false);
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [isProcessingElsewhere, loadDetails]);
 
   /* ---------------- Loading ---------------- */
   if (isLoading) {
@@ -181,8 +227,17 @@ export default function ComplaintDetailsPage() {
     );
   }
 
-  const { complaint, media } = details;
+  const { complaint, media, departmentName, history } = details;
   const statusMeta = getStatusMeta(complaint.status);
+
+  // A photo whose object could not be signed is a missing file, not a
+  // reason to hide the section — but it cannot be rendered either.
+  const viewableMedia = media.filter(
+    (item): item is (typeof media)[number] & { signedUrl: string } =>
+      item.signedUrl !== null
+  );
+
+  const unavailableCount = media.length - viewableMedia.length;
 
   return (
     <div>
@@ -240,7 +295,12 @@ export default function ComplaintDetailsPage() {
             </p>
           </div>
 
-          {isAnalyzing && (
+          {/*
+            Triage is asynchronous, so its three outcomes are shown
+            plainly rather than left to be inferred from a missing
+            priority badge.
+          */}
+          {(isAnalyzing || isProcessingElsewhere) && (
             <div className="flex shrink-0 items-center gap-2.5 rounded-lg border border-primary/20 bg-primary/5 px-3.5 py-2.5">
               <Loader2
                 className="h-4 w-4 animate-spin text-primary"
@@ -251,6 +311,36 @@ export default function ComplaintDetailsPage() {
               </span>
             </div>
           )}
+
+          {!isAnalyzing &&
+            !isProcessingElsewhere &&
+            (triageError || complaint.ai_analysis_status === "failed") && (
+              <div className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle
+                    className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-amber-900">
+                      Automatic triage didn&apos;t finish
+                    </p>
+                    <p className="mt-0.5 max-w-xs text-xs leading-relaxed text-amber-800/80">
+                      Your report is filed and will still be reviewed by
+                      staff. {triageError ?? complaint.ai_error_message ?? ""}
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void runTriage()}
+                      className="mt-2.5"
+                    >
+                      Try triage again
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
         </div>
       </div>
 
@@ -303,13 +393,13 @@ export default function ComplaintDetailsPage() {
                   Department
                 </dt>
                 <dd className="mt-1.5 flex items-center gap-1.5 text-sm font-medium text-foreground">
-                  {complaint.department_id ? (
+                  {departmentName ? (
                     <>
                       <Building2
                         className="h-3.5 w-3.5 text-muted-foreground"
                         aria-hidden="true"
                       />
-                      {formatCategory(complaint.department_id)}
+                      {departmentName}
                     </>
                   ) : (
                     <span className="text-muted-foreground">Not yet assigned</span>
@@ -347,14 +437,23 @@ export default function ComplaintDetailsPage() {
               className="text-sm font-semibold text-foreground"
             >
               Evidence
-              {media.length > 0 && (
+              {viewableMedia.length > 0 && (
                 <span className="ml-1.5 font-normal text-muted-foreground">
-                  ({media.length})
+                  ({viewableMedia.length})
                 </span>
               )}
             </h2>
 
-            {media.length === 0 ? (
+            {unavailableCount > 0 && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {unavailableCount === 1
+                  ? "One photo could not be loaded."
+                  : `${unavailableCount} photos could not be loaded.`}{" "}
+                Try refreshing.
+              </p>
+            )}
+
+            {viewableMedia.length === 0 ? (
               <div className="mt-4 flex flex-col items-center rounded-lg border border-dashed py-8 text-center">
                 <ImageOff
                   className="h-6 w-6 text-muted-foreground"
@@ -369,7 +468,7 @@ export default function ComplaintDetailsPage() {
               </div>
             ) : (
               <ul className="mt-4 grid gap-3 sm:grid-cols-2">
-                {media.map((item) => (
+                {viewableMedia.map((item) => (
                   <li key={item.id}>
                     <a
                       href={item.signedUrl}
@@ -459,6 +558,7 @@ export default function ComplaintDetailsPage() {
                 status={complaint.status}
                 createdAt={complaint.created_at}
                 updatedAt={complaint.updated_at}
+                history={history}
               />
             </div>
 
