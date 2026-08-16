@@ -28,7 +28,6 @@ import {
 import { PageHeader } from "@/components/shared/PageHeader";
 import { StatCard } from "@/components/shared/StatCard";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import {
   ChartSkeleton,
   PageHeaderSkeleton,
@@ -168,8 +167,6 @@ export default function GovernmentDashboard() {
           </Button>
         }
       />
-
-      <DemoDataNotice className="mb-6" />
 
       {/* ================= 1. WHAT NEEDS ATTENTION ================= */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

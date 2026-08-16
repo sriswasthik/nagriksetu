@@ -9,7 +9,6 @@ import { PriorityBadge } from "@/components/shared/PriorityBadge";
 import { SLAIndicator } from "@/components/shared/SLAIndicator";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { FilterChips, type FilterOption } from "@/components/shared/FilterChips";
 import { IssueListSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Button } from "@/components/ui/button";
@@ -31,7 +30,7 @@ const MATCHERS: Record<FilterKey, (wo: WorkOrder) => boolean> = {
   new: (wo) => wo.status === "assigned",
   in_progress: (wo) => wo.status === "in_progress",
   review: (wo) => ["proof_submitted", "supervisor_review"].includes(wo.status),
-  done: (wo) => ["completed", "approved"].includes(wo.status),
+  done: (wo) => ["resolved"].includes(wo.status),
   all: () => true,
 };
 
@@ -91,7 +90,12 @@ export default function OfficerWorkOrdersList() {
         if (!MATCHERS[filter](wo)) return false;
         if (!query) return true;
 
-        return [wo.complaintTitle, wo.id, wo.location.address, wo.complaintId]
+        return [
+          wo.complaintTitle,
+          wo.workOrderNumber,
+          wo.complaintNumber,
+          wo.location.address,
+        ]
           .filter(Boolean)
           .some((field) => String(field).toLowerCase().includes(query));
       })
@@ -127,8 +131,6 @@ export default function OfficerWorkOrdersList() {
           className="mb-6"
         />
       )}
-
-      <DemoDataNotice className="mb-6" />
 
       {/* ---------- Search + filters ---------- */}
       <div className="mb-6 space-y-4">
@@ -189,7 +191,7 @@ export default function OfficerWorkOrdersList() {
       ) : (
         <ul className="space-y-4">
           {filtered.map((order) => {
-            const isClosed = ["completed", "approved"].includes(order.status);
+            const isClosed = order.status === "resolved";
 
             return (
               <li key={order.id}>
@@ -198,7 +200,7 @@ export default function OfficerWorkOrdersList() {
                     <div className="min-w-0 flex-1 p-5">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-xs text-muted-foreground">
-                          {order.id}
+                          {order.workOrderNumber}
                         </span>
                         <Badge
                           variant={order.status === "assigned" ? "warning" : "info"}

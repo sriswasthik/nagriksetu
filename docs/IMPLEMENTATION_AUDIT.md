@@ -3,6 +3,28 @@
 Audit of `main` at `529fae7` (the merge of PR #2 into `main`).
 Read-only audit: no feature work, no UI changes, no architectural changes.
 
+> **Partly superseded.** This is a dated audit, kept as the record of what
+> `529fae7` looked like. The Supabase integration work has since resolved
+> the RLS gap below and everything that followed from it: all fourteen
+> tables now have policies, `workOrders.ts` and `analytics.ts` are
+> Supabase-backed, `src/lib/mock` and `DemoDataNotice` are gone, and the
+> assignment mutation and status sync both exist. See
+> [`supabase/README.md`](../supabase/README.md) and
+> `./supabase/tests/run.sh`.
+>
+> Two findings in this document were **wrong in the safe direction** and
+> are worth reading against what was actually found later: the schema was
+> not quite complete (nothing created the storage bucket, and
+> `storage.objects` had zero policies), and "nothing is over-exposed" did
+> not hold — a citizen could forge a supervisor's verdict on the shared
+> `verifications` row.
+>
+> The **Phase 0 security items are all still open**: route protection in
+> `proxy.ts`, the unauthenticated debug route, the legacy constant-password
+> path in `authService`, and the `user_metadata.role` fallback. None of
+> those are database concerns, so none were touched. Read them before
+> deploying.
+
 ## The single most important finding
 
 **The database schema is complete. The RLS policies are not.**

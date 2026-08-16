@@ -2,7 +2,8 @@
 
 Civic complaint management platform. Citizens report civic issues; the report
 is triaged and routed to a department; field officers carry out the work and
-submit photographic proof; supervisors verify it before anything closes.
+submit photographic proof; supervisors and the reporting citizen verify it
+before anything closes.
 
 Previously named NagrikSetu. Some backend identifiers still carry the old name
 on purpose — see [Naming](#naming).
@@ -55,6 +56,26 @@ Migrations live in `supabase/migrations/` and run in filename order:
 supabase db push
 ```
 
+There is no state that exists only in the Supabase dashboard — buckets,
+storage policies, triggers, reference data and the analytics functions are
+all migrations, so a fresh project reproduces a working database exactly.
+
+**One manual step is required.** Every profile is created as a `citizen`
+and nothing in the UI can change a role, so a new deployment has no staff
+until an administrator is appointed by hand after the first sign-up:
+
+```sql
+select public.set_user_role(
+  (select id from auth.users where email = 'you@example.com'),
+  'government_admin'
+);
+```
+
+That administrator can then appoint everyone else from the app.
+[`supabase/README.md`](supabase/README.md) covers this in full, along with
+what each migration does, the storage path conventions and the row-level
+security model.
+
 ## Scripts
 
 | Command | Purpose |
@@ -63,6 +84,7 @@ supabase db push
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
+| `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy |
 
 ## Project layout
 
@@ -72,21 +94,42 @@ src/components/    ui/ (shadcn), layout/ (shell), shared/, map/, charts/, report
 src/lib/design/    status + motion systems — single source of truth
 src/lib/services/  Supabase and data access
 src/lib/supabase/  browser and server clients
-src/lib/mock/      demonstration data (see the audit)
-supabase/          migrations
+supabase/          migrations and the RLS test suite
 docs/              implementation audit
 ```
 
+## Roles
+
+Four roles, defined by the `public.user_role` enum:
+
+| Role | Workspace | Can |
+| --- | --- | --- |
+| `citizen` | `/citizen` | File reports, track their own, confirm or reject a repair |
+| `officer` | `/officer` | Work their own assignments and submit proof |
+| `supervisor` | `/government` | Everything an officer can see, plus verify submitted proof |
+| `government_admin` | `/government` | Assign work, view city-wide analytics, appoint staff |
+
+Enforced in the database, not the client: a citizen cannot read another
+citizen's report or advance a work order regardless of what the browser
+sends. `./supabase/tests/run.sh` asserts both halves of each rule.
+
 ## Current state
 
-Some officer and government screens are backed by demonstration data rather
-than the database, and render a "Sample data" notice where they are. The
-reasons, the completion matrix and the recommended order of work are in
+Officer and government screens read live database state. The completion
+matrix and the recommended order of remaining work are in
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
 
 That document also records open **security** items — most importantly that
 `proxy.ts` refreshes the session but does not yet enforce authentication or
-role checks on `/officer` and `/government`. Read it before deploying.
+role checks on `/officer` and `/government`. Row-level security means an
+unauthorised visitor sees empty screens rather than other people's data, but
+the routes themselves are still reachable. Read it before deploying.
+
+Known functional gaps: complaints are not assigned to a ward (the `wards`
+table has no geometry to derive one from), nothing writes to the
+`notifications` table yet, and there is no UI for a supervisor to record a
+verdict or for a citizen to reject a repair — though the database supports
+all three.
 
 ## Naming
 

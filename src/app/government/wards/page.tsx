@@ -5,7 +5,6 @@ import { Grid3X3 } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/PageHeader";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { FilterChips, type FilterOption } from "@/components/shared/FilterChips";
 import { PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -117,8 +116,6 @@ export default function GovernmentWardsPage() {
         title="Wards"
         description="Ward-level service health, lowest compliance first."
       />
-
-      <DemoDataNotice className="mb-6" />
 
       <div className="mb-6">
         <FilterChips

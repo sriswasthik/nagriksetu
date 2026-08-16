@@ -5,7 +5,6 @@ import { Building2 } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/PageHeader";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { PageHeaderSkeleton, TableSkeleton } from "@/components/shared/skeletons";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
@@ -79,8 +78,6 @@ export default function GovernmentDepartmentsPage() {
         title="Departments"
         description="Workload, throughput and service-level performance by department."
       />
-
-      <DemoDataNotice className="mb-6" />
 
       {/* Table scrolls inside its own container so the page never
           overflows horizontally on mobile. */}

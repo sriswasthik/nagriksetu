@@ -16,7 +16,6 @@ import { PriorityBadge } from "@/components/shared/PriorityBadge";
 import { SLAIndicator } from "@/components/shared/SLAIndicator";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
-import { DemoDataNotice } from "@/components/shared/DemoDataNotice";
 import { StatGridSkeleton, PageHeaderSkeleton } from "@/components/shared/skeletons";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -80,7 +79,7 @@ export default function OfficerDashboard() {
   const breaching = active.filter((wo) => wo.slaHoursRemaining <= 6);
   const completedToday = workOrders.filter(
     (wo) =>
-      (wo.status === "completed" || wo.status === "proof_submitted") &&
+      (wo.status === "resolved" || wo.status === "proof_submitted") &&
       new Date(wo.updatedAt).toDateString() === new Date().toDateString()
   );
 
@@ -115,11 +114,6 @@ export default function OfficerDashboard() {
           className="mb-6"
         />
       )}
-
-      <DemoDataNotice
-        className="mb-6"
-        detail="Work orders are served from local demonstration data — there is no work_orders table in the database yet."
-      />
 
       {/* ---------- Operational metrics ---------- */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -195,7 +189,7 @@ export default function OfficerDashboard() {
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-mono text-xs text-muted-foreground">
-                      {order.id}
+                      {order.workOrderNumber}
                     </span>
                     <Badge
                       variant={order.status === "assigned" ? "warning" : "info"}

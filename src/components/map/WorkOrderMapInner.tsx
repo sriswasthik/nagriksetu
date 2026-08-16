@@ -11,22 +11,19 @@ import type { ComplaintStatus } from "@/types/complaint";
 import type { WorkOrder, WorkOrderStatus } from "@/types/workOrder";
 
 /**
- * Work-order statuses are a superset of complaint statuses (they add
- * approved / rework_requested / cancelled / created). Map them onto
- * the complaint status vocabulary so markers reuse the single shared
- * tone system rather than inventing a second colour scheme.
+ * work_order_status and complaint_status share their vocabulary, so
+ * markers reuse the single shared tone system rather than inventing a
+ * second colour scheme.
  */
 const STATUS_TO_COMPLAINT: Record<WorkOrderStatus, ComplaintStatus> = {
-  created: "submitted",
   assigned: "assigned",
   accepted: "accepted",
   in_progress: "in_progress",
   proof_submitted: "proof_submitted",
   supervisor_review: "supervisor_review",
-  approved: "resolved",
-  completed: "resolved",
-  rework_requested: "reopened",
-  cancelled: "rejected",
+  citizen_confirmation: "citizen_confirmation",
+  resolved: "resolved",
+  reopened: "reopened",
 };
 
 interface WorkOrderMapInnerProps {
@@ -75,7 +72,7 @@ export default function WorkOrderMapInner({
         const isSelected = order.id === selectedId;
         const isUrgentOpen =
           order.priorityLevel === "critical" &&
-          !["completed", "approved", "cancelled"].includes(order.status);
+          !["resolved"].includes(order.status);
 
         return (
           <Marker
