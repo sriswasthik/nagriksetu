@@ -58,6 +58,7 @@ Appointing an officer or a supervisor is the same call with `'officer'` or
 | `20260814120500_role_administration` | `set_user_role()`, and the exemption that makes role assignment possible at all |
 | `20260814120600_verification_column_authority` | Stops a citizen forging the supervisor's verdict |
 | `20260814120700_complaint_and_work_order_column_authority` | Column authority on complaints and work orders, plus the triage write path |
+| `20260814120800_complaint_lifecycle` | Status history, idempotent submission, and triage advancing the status |
 
 Each file opens with a comment explaining what was wrong and why the fix
 is shaped the way it is. Those comments are the reference; this table is
@@ -135,6 +136,41 @@ running it in an Edge Function or a route handler with a service-role key;
 nothing else would change, since `apply_complaint_triage()` is already the
 only write path.
 
+## The complaint lifecycle
+
+A citizen's report moves through the database like this:
+
+| Step | What the database does |
+| --- | --- |
+| Submit | `submit_complaint()` — idempotent on `submission_key`, validates text and coordinates, takes `citizen_id` from `auth.uid()` |
+| Number | `complaints_set_number` assigns `NS-<year>-<sequence>` |
+| Record | `complaints_record_status` writes the first `complaint_status_history` row |
+| Triage | `apply_complaint_triage()` sets category, priority, department, the `ai_*` columns, and advances `submitted` → `ai_analyzed` |
+| SLA | `complaints_set_sla_due_at` derives `sla_due_at` from the new priority |
+| Track | Every later transition appends to `complaint_status_history` |
+
+Three things are worth knowing about that.
+
+**Submission is idempotent.** The client generates a `submission_key`
+per form fill and `submit_complaint()` returns the existing complaint if
+that key has been used. Without it, an insert that succeeded but whose
+response was lost looked identical to a failure, so a retry filed the
+same issue twice.
+
+**Status history is append-only.** `complaint_status_history` has a SELECT
+policy and nothing else — no INSERT, UPDATE or DELETE, for anyone. Rows
+come only from the trigger. It is what lets the citizen's timeline date
+each stage; `complaints.updated_at` cannot, because every later change
+overwrites it.
+
+**Triage is not a form submission.** The classifier runs in the
+browser (see the column-authority notes above), so
+`apply_complaint_triage()` is once-only for a citizen and
+`set_complaint_ai_status()` records `processing` and `failed` states. The
+detail page reads `ai_analysis_status` to decide whether to run triage,
+poll, or offer a retry — which is why triage no longer depends on the
+citizen following a particular link after submitting.
+
 ## Testing
 
 ```bash
@@ -150,6 +186,7 @@ order, then runs each suite:
 | --- | --- |
 | `01_rls_smoke_test.sql` | The full lifecycle as four users: file → assign → work → verify → confirm → resolve |
 | `02_auth_boundary_test.sql` | Who may read and write what: anonymous access, citizen confinement, officer confinement, authority limits, the triage path, role escalation |
+| `03_complaint_lifecycle_test.sql` | The citizen's own path: submission, idempotency, coordinate validation, triage, and the status history a timeline reads |
 
 Needs PostgreSQL server binaries; no Docker and no Supabase project.
 

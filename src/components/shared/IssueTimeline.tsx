@@ -11,14 +11,23 @@ import {
   getTimelineStageIndex,
 } from "@/lib/design/status";
 import { DURATION, EASE_OUT } from "@/lib/design/motion";
-import type { ComplaintStatus } from "@/types/complaint";
+import type { ComplaintStatus, ComplaintStatusEvent } from "@/types/complaint";
 
 interface IssueTimelineProps {
   status: ComplaintStatus;
-  /** Submission time — anchors the first stage. */
+  /** Submission time — the fallback anchor for the first stage. */
   createdAt?: string;
-  /** Last status change — anchors the current stage. */
+  /** Last status change — the fallback anchor for the current stage. */
   updatedAt?: string;
+  /**
+   * Recorded transitions, oldest first.
+   *
+   * When present, each completed stage shows when it actually happened.
+   * Without it only two timestamps exist — created_at and updated_at —
+   * and updated_at is overwritten by every later change, so every stage
+   * in between rendered a bare "Completed." with no date.
+   */
+  history?: ComplaintStatusEvent[];
   className?: string;
 }
 
@@ -37,16 +46,41 @@ interface IssueTimelineProps {
  *
  * Terminal states (rejected) render their own panel — forcing them
  * onto a linear progress track would misrepresent them.
+ *
+ * Timestamps come from complaint_status_history where it exists. Stages
+ * with no recorded event stay undated rather than borrowing a nearby
+ * one: a citizen reading "Assigned — 14 March" needs that to be the day
+ * it was assigned.
  */
 export function IssueTimeline({
   status,
   createdAt,
   updatedAt,
+  history,
   className,
 }: IssueTimelineProps) {
   const prefersReducedMotion = useReducedMotion();
   const currentIndex = getTimelineStageIndex(status);
   const meta = getStatusMeta(status);
+
+  /*
+   * First recorded event per stage.
+   *
+   * First, not last: a reopened complaint passes through the same stages
+   * again, and "In Progress" should read as when the work started rather
+   * than when it most recently restarted.
+   */
+  const stageTimestamps = new Map<string, string>();
+
+  for (const event of history ?? []) {
+    const stage = TIMELINE_STAGES.find((candidate) =>
+      candidate.statuses.includes(event.status)
+    );
+
+    if (stage && !stageTimestamps.has(stage.key)) {
+      stageTimestamps.set(stage.key, event.created_at);
+    }
+  }
 
   // Rejected sits outside the progress track.
   if (currentIndex === -1) {
@@ -98,14 +132,17 @@ export function IssueTimeline({
           const description = isCurrent
             ? meta.description
             : isComplete
-              ? `Completed.`
+              ? "Completed."
               : stage.upcomingHint;
 
-          const timestamp = isCurrent
-            ? updatedAt
-            : index === 0
-              ? createdAt
-              : undefined;
+          /*
+           * Recorded time wins. The created_at / updated_at fallbacks
+           * keep the timeline populated for complaints filed before
+           * history was recorded, and for the backfilled first stage.
+           */
+          const timestamp =
+            stageTimestamps.get(stage.key) ??
+            (isCurrent ? updatedAt : index === 0 ? createdAt : undefined);
 
           return (
             <li key={stage.key} className="relative flex gap-4">

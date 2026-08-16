@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -46,9 +46,23 @@ import type { Complaint } from "@/types/complaint";
  * Validation is per-step and inline, so the user is never told about
  * a problem three screens after causing it.
  *
- * Backend contract is unchanged: createComplaint() then
- * uploadComplaintEvidence(), then redirect to the detail page with
- * ?process=ai so the existing AI pipeline runs.
+ * SUBMISSION
+ *
+ * createComplaint() carries a submissionKey generated once per form
+ * fill, and submit_complaint() is idempotent on it. That is what makes
+ * the Submit button safe to press twice: previously, if the insert
+ * succeeded and the response was lost, the form showed an error and a
+ * second press filed the same issue again.
+ *
+ * Evidence is uploaded after the complaint exists, because object
+ * storage cannot join the complaint's transaction. A failed upload
+ * therefore leaves a valid report and a retryable file rather than
+ * rolling anything back — hence the retry on the confirmation screen.
+ *
+ * Triage is not triggered from here. The detail page runs it whenever a
+ * complaint has not been through it, so closing this tab straight after
+ * submitting no longer leaves a report permanently untriaged and
+ * unrouted.
  */
 
 const STEPS: Step[] = [
@@ -81,6 +95,28 @@ export default function ReportIssuePage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [created, setCreated] = useState<Complaint | null>(null);
 
+  /*
+   * The photo that did not upload, kept so the confirmation screen can
+   * retry it. The complaint already exists at that point, so this is the
+   * only outstanding work.
+   */
+  const [pendingEvidence, setPendingEvidence] = useState<File | null>(null);
+  const [isRetryingUpload, setIsRetryingUpload] = useState(false);
+
+  /*
+   * One key per attempt to file one report.
+   *
+   * Generated with crypto.randomUUID in a ref so it survives re-renders
+   * and, crucially, survives a failed submit — the retry then carries the
+   * same key and submit_complaint() returns the existing complaint
+   * instead of creating a second one. Regenerated only after a
+   * successful submission, so "Report another" starts a genuinely new
+   * report.
+   */
+  const [submissionKey, setSubmissionKey] = useState<string>(() =>
+    crypto.randomUUID()
+  );
+
   const [form, setForm] = useState<FormState>({
     category: null,
     file: null,
@@ -92,8 +128,65 @@ export default function ReportIssuePage() {
     description: "",
   });
 
-  function update(patch: Partial<FormState>) {
+  /*
+   * The page owns every object URL it creates.
+   *
+   * PhotoUpload used to revoke previewUrl in an unmount cleanup, which
+   * fired the moment the wizard left step 1 — so the review step and the
+   * upload progress preview both rendered a revoked blob: URL as a broken
+   * image. Revocation now happens here, where the URL's lifetime is
+   * actually known: when it is replaced, cleared, or the page goes away.
+   */
+  const update = useCallback((patch: Partial<FormState>) => {
     setForm((current) => ({ ...current, ...patch }));
+  }, []);
+
+  /*
+   * One effect owns each object URL's lifetime: the cleanup runs when
+   * previewUrl is replaced and again when the page unmounts, which is
+   * exactly when the URL stops being needed. The wizard keeps this page
+   * mounted across all four steps, so — unlike the cleanup that used to
+   * live in PhotoUpload — it cannot fire while the review screen is
+   * still displaying the photo.
+   */
+  useEffect(() => {
+    const url = form.previewUrl;
+
+    return () => {
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [form.previewUrl]);
+
+  /**
+   * Coordinates within range and not 0,0.
+   *
+   * A failed GPS read and Null Island are indistinguishable, and Leaflet
+   * hands back longitudes beyond ±180 once the map has been panned across
+   * the antimeridian. submit_complaint() rejects both, so catching them
+   * here is the difference between an inline message and a failed
+   * submission.
+   */
+  function coordinateProblem(
+    latitude: number | null,
+    longitude: number | null
+  ): string | null {
+    if (latitude === null || longitude === null) {
+      return "We need the location. Use your current location, or tap the map to place a pin.";
+    }
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return "Those coordinates aren't valid. Please place the pin again.";
+    }
+
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return "Those coordinates are out of range. Please place the pin again.";
+    }
+
+    if (latitude === 0 && longitude === 0) {
+      return "That looks like a failed location read. Please capture your location again or place the pin on the map.";
+    }
+
+    return null;
   }
 
   /** Validates the current step, returning true when it may be left. */
@@ -105,10 +198,9 @@ export default function ReportIssuePage() {
     }
 
     if (index === 1) {
-      if (form.latitude === null || form.longitude === null) {
-        next.location =
-          "We need the location. Use your current location, or tap the map to place a pin.";
-      }
+      const problem = coordinateProblem(form.latitude, form.longitude);
+      if (problem) next.location = problem;
+
       if (form.address.trim().length < 5) {
         next.address = "Please enter an address or nearby landmark.";
       }
@@ -148,56 +240,35 @@ export default function ReportIssuePage() {
       }
     }
 
+    // Belt and braces against a double-fire from a fast double click.
+    if (isSubmitting) return;
+
     setIsSubmitting(true);
     setSubmitError(null);
 
+    let complaint: Complaint;
+
     try {
-      const complaint = await createComplaint({
+      complaint = await createComplaint({
+        submissionKey,
         title: form.title.trim(),
         description: form.description.trim(),
-        // Stored as the DB enum; the AI service refines this and keeps
-        // its richer classification in ai_category.
+        // Stored as the DB enum; triage refines this and keeps its
+        // richer classification in ai_category.
         category: toDatabaseCategory(form.category ?? "other"),
         latitude: form.latitude,
         longitude: form.longitude,
         address: form.address.trim(),
         wardId: null,
       });
-
-      // Upload evidence if provided. A failed upload must not lose the
-      // report — it is already saved at this point.
-      if (form.file) {
-        setUploadProgress(40);
-
-        try {
-          await uploadComplaintEvidence(complaint.id, form.file);
-          setUploadProgress(100);
-        } catch (uploadError) {
-          console.error("Evidence upload failed:", uploadError);
-
-          setCreated(complaint);
-          setIsSubmitting(false);
-          setUploadProgress(null);
-
-          toast.warning("Report submitted, but the photo didn't upload", {
-            description: "You can add evidence from the report page.",
-          });
-          return;
-        }
-      }
-
-      if (form.previewUrl) URL.revokeObjectURL(form.previewUrl);
-
-      setCreated(complaint);
-      setIsSubmitting(false);
-      setUploadProgress(null);
-
-      toast.success("Report submitted", {
-        description: `Tracking ID ${complaint.complaint_number}`,
-      });
     } catch (error) {
       console.error("Failed to submit report:", error);
 
+      /*
+       * Nothing is cleared. The form keeps everything the citizen typed
+       * and the photo they chose, so pressing Submit again retries with
+       * the same submission key rather than starting over.
+       */
       setSubmitError(
         error instanceof Error && error.message
           ? error.message
@@ -205,6 +276,90 @@ export default function ReportIssuePage() {
       );
       setIsSubmitting(false);
       setUploadProgress(null);
+      return;
+    }
+
+    /*
+     * The report exists from here on, so no failure below may present
+     * itself as a failed submission.
+     */
+    if (form.file) {
+      setUploadProgress(40);
+
+      try {
+        await uploadComplaintEvidence(complaint.id, form.file);
+        setUploadProgress(100);
+      } catch (uploadError) {
+        console.error("Evidence upload failed:", uploadError);
+
+        // Held for the retry on the confirmation screen.
+        setPendingEvidence(form.file);
+        setCreated(complaint);
+        setIsSubmitting(false);
+        setUploadProgress(null);
+
+        toast.warning("Report submitted, but the photo didn't upload", {
+          description:
+            uploadError instanceof Error && uploadError.message
+              ? uploadError.message
+              : "You can try the upload again below.",
+        });
+        return;
+      }
+    }
+
+    finishSubmission(complaint);
+
+    toast.success("Report submitted", {
+      description: `Tracking ID ${complaint.complaint_number}`,
+    });
+  }
+
+  /** Shared tail of a successful submission. */
+  function finishSubmission(complaint: Complaint) {
+    setCreated(complaint);
+    setPendingEvidence(null);
+    setIsSubmitting(false);
+    setUploadProgress(null);
+
+    /*
+     * A fresh key, so "Report another" cannot be folded into this
+     * report by the idempotency check.
+     */
+    setSubmissionKey(crypto.randomUUID());
+  }
+
+  /**
+   * Retries just the photo.
+   *
+   * The complaint is already filed, so this never re-submits it — which
+   * is why the file is kept rather than the citizen being asked to start
+   * again with a report that already exists.
+   */
+  async function retryEvidenceUpload() {
+    if (!created || !pendingEvidence || isRetryingUpload) return;
+
+    setIsRetryingUpload(true);
+
+    try {
+      await uploadComplaintEvidence(created.id, pendingEvidence);
+
+      setPendingEvidence(null);
+
+      toast.success("Photo attached", {
+        description: "It is now part of your report.",
+      });
+    } catch (retryError) {
+      console.error("Evidence retry failed:", retryError);
+
+      toast.error("The photo still didn't upload", {
+        description:
+          retryError instanceof Error && retryError.message
+            ? retryError.message
+            : "Please try again in a moment.",
+      });
+    } finally {
+      setIsRetryingUpload(false);
     }
   }
 
@@ -244,6 +399,53 @@ export default function ReportIssuePage() {
             <StatusBadge status={created.status} showIcon />
           </div>
 
+          {/*
+            The report is filed but its photo is not. Offering the retry
+            here is what makes the earlier warning actionable — the copy
+            used to say "you can add evidence from the report page", which
+            had no such affordance.
+          */}
+          {pendingEvidence && (
+            <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-left">
+              <div className="flex items-start gap-3">
+                <AlertCircle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-amber-900">
+                    Your photo didn&apos;t upload
+                  </p>
+                  <p className="mt-1 text-sm leading-relaxed text-amber-800/80">
+                    The report itself is saved. You can try attaching{" "}
+                    <span className="font-medium">{pendingEvidence.name}</span>{" "}
+                    again.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={retryEvidenceUpload}
+                    disabled={isRetryingUpload}
+                    className="mt-3"
+                  >
+                    {isRetryingUpload ? (
+                      <>
+                        <Loader2
+                          className="mr-1 h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                        Uploading…
+                      </>
+                    ) : (
+                      "Retry photo upload"
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="mt-8 flex flex-col gap-2.5 sm:flex-row sm:justify-center">
             <Button asChild size="lg">
               <Link href={`/citizen/complaints/${created.id}?process=ai`}>
@@ -251,8 +453,33 @@ export default function ReportIssuePage() {
                 <ArrowRight className="ml-1 h-4 w-4" aria-hidden="true" />
               </Link>
             </Button>
-            <Button asChild variant="outline" size="lg">
-              <Link href="/citizen/report">Report another</Link>
+            <Button
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                /*
+                 * Reset in place rather than navigating to the same
+                 * route, which Next.js treats as a no-op and which left
+                 * the confirmation screen on display.
+                 */
+                setCreated(null);
+                setPendingEvidence(null);
+                setSubmitError(null);
+                setErrors({});
+                setStep(0);
+                setForm({
+                  category: null,
+                  file: null,
+                  previewUrl: null,
+                  latitude: null,
+                  longitude: null,
+                  address: "",
+                  title: "",
+                  description: "",
+                });
+              }}
+            >
+              Report another
             </Button>
           </div>
         </div>
@@ -332,10 +559,9 @@ export default function ReportIssuePage() {
                 file={form.file}
                 previewUrl={form.previewUrl}
                 onSelect={(file, previewUrl) => update({ file, previewUrl })}
-                onClear={() => {
-                  if (form.previewUrl) URL.revokeObjectURL(form.previewUrl);
-                  update({ file: null, previewUrl: null });
-                }}
+                // The effect above revokes the outgoing URL; clearing
+                // here as well would revoke it twice.
+                onClear={() => update({ file: null, previewUrl: null })}
                 disabled={isSubmitting}
               />
             </div>

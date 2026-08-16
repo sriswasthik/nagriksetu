@@ -149,11 +149,17 @@ unauthenticated debug route, the constant-password path in `authService`,
 and the `user_metadata.role` fallback. See
 [Roles and authorization](#roles-and-authorization).
 
+The citizen path — report, triage, track — is complete: submission is
+idempotent, coordinates and text are validated server-side, evidence
+uploads are retryable, and the tracking timeline is built from recorded
+transitions rather than inferred from the current status. See
+[supabase/README.md](supabase/README.md#the-complaint-lifecycle).
+
 Known functional gaps: complaints are not assigned to a ward (the `wards`
 table has no geometry to derive one from), nothing writes to the
-`notifications` table yet, and there is no UI for a supervisor to record a
-verdict or for a citizen to reject a repair — though the database supports
-all three.
+`notifications` table yet — the in-app feed is derived from complaint
+state instead — and there is no UI for a supervisor to record a verdict or
+for a citizen to reject a repair, though the database supports both.
 
 ## Naming
 
