@@ -103,3 +103,21 @@ end;
 $$;
 
 grant usage on schema auth, storage, public, test to anon, authenticated, service_role;
+
+/*
+ * Supabase grants table privileges to `anon` as well as `authenticated`
+ * — an unauthenticated PostgREST request reaches the tables and is
+ * turned away by row-level security, not by a missing GRANT.
+ *
+ * Reproducing that matters for the tests that assert an anonymous caller
+ * sees nothing. Without these grants those tests would pass for the
+ * wrong reason (42501 from GRANT) and would keep passing even if every
+ * policy were dropped.
+ *
+ * Applied to future tables too, since the migrations run after this file.
+ */
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to anon, authenticated, service_role;
+
+alter default privileges in schema public
+  grant usage, select on sequences to anon, authenticated, service_role;

@@ -84,34 +84,59 @@ security model.
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
-| `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy |
+| `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
+| `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
 
 ## Project layout
 
 ```
 src/app/           routes: /, /auth/*, /citizen/*, /officer/*, /government/*
 src/components/    ui/ (shadcn), layout/ (shell), shared/, map/, charts/, report/
+src/lib/auth/      role→workspace map and the server-side workspace guard
 src/lib/design/    status + motion systems — single source of truth
 src/lib/services/  Supabase and data access
 src/lib/supabase/  browser and server clients
+src/proxy.ts       session refresh + route authorization (must sit beside app/)
 supabase/          migrations and the RLS test suite
 docs/              implementation audit
 ```
 
-## Roles
+## Roles and authorization
 
 Four roles, defined by the `public.user_role` enum:
 
-| Role | Workspace | Can |
-| --- | --- | --- |
-| `citizen` | `/citizen` | File reports, track their own, confirm or reject a repair |
-| `officer` | `/officer` | Work their own assignments and submit proof |
-| `supervisor` | `/government` | Everything an officer can see, plus verify submitted proof |
-| `government_admin` | `/government` | Assign work, view city-wide analytics, appoint staff |
+| Role | Lands on | Workspaces | Can |
+| --- | --- | --- | --- |
+| `citizen` | `/citizen` | citizen | File reports, correct and track their own, reopen an unsatisfactory repair |
+| `officer` | `/officer` | officer | Work their own assignments and submit proof |
+| `supervisor` | `/officer` | officer, government | Oversee field work, verify submitted proof, read city-wide |
+| `government_admin` | `/government` | officer, government | Assign work, triage, city analytics, appoint staff |
 
-Enforced in the database, not the client: a citizen cannot read another
-citizen's report or advance a work order regardless of what the browser
-sends. `./supabase/tests/run.sh` asserts both halves of each rule.
+Administrators need the officer workspace because the authority queue
+links straight to `/officer/work-orders/[id]` — that page is where an
+assignment is inspected.
+
+### Three layers, in order of authority
+
+1. **Row-level security** is the boundary. It is the only layer a direct
+   PostgREST call has to get past, and the publishable key is in every
+   browser, so anything that matters is enforced here. Policies decide
+   which rows; triggers decide which columns, because RLS cannot.
+2. **`src/proxy.ts`** refreshes the session and redirects: no session to
+   the login page carrying `?next=`, wrong role to that user's own
+   workspace, already signed in away from the auth pages. It must sit
+   beside `app/` — at the repository root Next.js silently ignores it.
+3. **Workspace layouts** re-check server-side via
+   `requireWorkspace()`. Redundant with the proxy on purpose: one check
+   in one file is one point of failure, and reading cookies also stops
+   protected shells being prerendered and served from a CDN.
+
+Role comes from `public.profiles` and nowhere else. It is never read
+from `user_metadata`, which the user can write at sign-up.
+
+Both layers are asserted, not assumed:
+`./supabase/tests/run.sh` for the database and
+`./scripts/verify-route-protection.sh` for the routes.
 
 ## Current state
 
@@ -119,11 +144,10 @@ Officer and government screens read live database state. The completion
 matrix and the recommended order of remaining work are in
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
 
-That document also records open **security** items — most importantly that
-`proxy.ts` refreshes the session but does not yet enforce authentication or
-role checks on `/officer` and `/government`. Row-level security means an
-unauthorised visitor sees empty screens rather than other people's data, but
-the routes themselves are still reachable. Read it before deploying.
+Its Phase 0 security items are now closed — route protection, the
+unauthenticated debug route, the constant-password path in `authService`,
+and the `user_metadata.role` fallback. See
+[Roles and authorization](#roles-and-authorization).
 
 Known functional gaps: complaints are not assigned to a ward (the `wards`
 table has no geometry to derive one from), nothing writes to the

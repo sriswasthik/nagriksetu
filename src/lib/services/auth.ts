@@ -1,4 +1,45 @@
 import { createClient } from "@/lib/supabase/client";
+import { isAppRole } from "@/lib/auth/roles";
+import type { UserRole } from "@/types/user";
+
+/**
+ * ============================================================
+ * AUTHENTICATION
+ * ============================================================
+ *
+ * WHAT WAS REMOVED, AND WHY
+ *
+ * `authService.login` and `authService.register` are gone. They were
+ * dead — nothing imported them; the login and registration pages use
+ * signIn/signUp — but they were also a working authentication bypass, so
+ * deleting them matters more than the line count suggests:
+ *
+ *   * `login({ identifier, otp })` ignored `otp` entirely and called
+ *     signInWithPassword with the literal
+ *     "placeholder-no-passwords-in-citytrace". `register` created
+ *     accounts with that same constant when no password was supplied.
+ *     Any account made that way could be signed into by anyone who knew
+ *     the email or mobile number — the string is in the client bundle.
+ *
+ *   * `register` copied a caller-supplied `role` into user_metadata,
+ *     which is user-writable at sign-up.
+ *
+ *   * Role resolution then read
+ *     `profile?.role || user.user_metadata?.role`, so a failed or empty
+ *     profile read promoted the user to whatever role they had declared
+ *     for themselves. Registering with `role: "government_admin"` and
+ *     arranging for the profile lookup to come back empty was a complete
+ *     privilege escalation.
+ *
+ * The same constant-password fallback lived in `signIn`, dressed as a
+ * compatibility shim for accounts predating the CityTrace rename. It
+ * retried failed logins against `@nagriksetu.*` addresses with
+ * "placeholder-no-passwords-in-nagriksetu", which made the bypass
+ * reachable from the real login form. Also removed.
+ *
+ * Role now comes from public.profiles and nowhere else. A profile that
+ * cannot be read is an error, not a citizen.
+ */
 
 export interface SignUpInput {
   fullName: string;
@@ -24,6 +65,12 @@ export async function signUp({
     email,
     password,
     options: {
+      /*
+       * Deliberately no `role` here. handle_new_user() creates every
+       * profile as a citizen, and staff are appointed with
+       * public.set_user_role(); anything sent in this object is
+       * attacker-controlled and must never influence authorization.
+       */
       data: {
         full_name: fullName,
         phone: phone ?? null,
@@ -38,36 +85,13 @@ export async function signUp({
   return data;
 }
 
-export async function signIn({
-  email,
-  password,
-}: SignInInput) {
+export async function signIn({ email, password }: SignInInput) {
   const supabase = createClient();
 
-  let authResult = await supabase.auth.signInWithPassword({
+  const { data, error } = await supabase.auth.signInWithPassword({
     email,
     password,
   });
-
-  // Fallback for legacy database accounts created before project rename
-  if (authResult.error && authResult.error.message.includes("Invalid login credentials")) {
-    const legacyEmail = email
-      .replace("@citytrace.gov.in", "@nagriksetu.gov.in")
-      .replace("@citytrace.temp", "@nagriksetu.temp");
-      
-    const legacyPassword = password === "placeholder-no-passwords-in-citytrace" 
-      ? "placeholder-no-passwords-in-nagriksetu" 
-      : password;
-
-    if (legacyEmail !== email || legacyPassword !== password) {
-      authResult = await supabase.auth.signInWithPassword({
-        email: legacyEmail,
-        password: legacyPassword,
-      });
-    }
-  }
-
-  const { data, error } = authResult;
 
   if (error) {
     throw error;
@@ -125,97 +149,69 @@ export async function getCurrentProfile() {
   return data;
 }
 
+/** The shape the header menu and profile view render. */
+export interface CurrentUser {
+  id: string;
+  name: string;
+  email: string;
+  avatar: string;
+  role: UserRole;
+  department?: string;
+  mobile: string;
+  isVerified: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const authService = {
-  login: async (credentials: { identifier: string; otp: string }) => {
+  /**
+   * The signed-in user, or null.
+   *
+   * Returns null rather than a partially-populated object when the
+   * profile cannot be read. The previous version defaulted the role to
+   * "citizen" in that case, which read as a safe fallback but was not:
+   * combined with the user_metadata fallback it silently decided
+   * authorization from data the user controlled. A missing profile is a
+   * real failure and the caller should treat the visitor as signed out.
+   */
+  getCurrentUser: async (): Promise<CurrentUser | null> => {
     const supabase = createClient();
-    const email = credentials.identifier.includes('@') ? credentials.identifier : `${credentials.identifier}@citytrace.temp`;
-    
-    let authResult = await supabase.auth.signInWithPassword({
-      email,
-      password: "placeholder-no-passwords-in-citytrace",
-    });
 
-    // Fallback for legacy database accounts created before project rename
-    if (authResult.error && authResult.error.message.includes("Invalid login credentials")) {
-      const legacyEmail = email
-        .replace("@citytrace.gov.in", "@nagriksetu.gov.in")
-        .replace("@citytrace.temp", "@nagriksetu.temp");
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-      if (legacyEmail !== email) {
-        authResult = await supabase.auth.signInWithPassword({
-          email: legacyEmail,
-          password: "placeholder-no-passwords-in-nagriksetu",
-        });
-      }
+    if (!user) return null;
+
+    const { data: profile, error } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, phone, role, avatar_url, created_at, updated_at")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (error || !profile || !isAppRole(profile.role)) {
+      console.error("Profile unavailable for signed-in user", error?.message);
+      return null;
     }
 
-    const { data, error } = authResult;
-    if (error) throw error;
-    
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", data.user.id)
-      .single();
-      
-    return {
-      ...data,
-      user: {
-        ...data.user,
-        role: profile?.role || data.user.user_metadata?.role || "citizen"
-      }
-    };
-  },
-  
-  register: async (userData: { name: string; mobile: string; email: string; password?: string; role: string }) => {
-    const supabase = createClient();
-    const email = userData.email || `${userData.mobile}@citytrace.temp`;
-    
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password: userData.password || "placeholder-no-passwords-in-citytrace",
-      options: {
-        data: {
-          full_name: userData.name,
-          phone: userData.mobile,
-          role: userData.role
-        }
-      }
-    });
-    
-    if (error) throw error;
-    return data;
-  },
-
-  getCurrentUser: async () => {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) return null;
-    
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", user.id)
-      .single();
-      
     return {
       id: user.id,
-      name: profile?.full_name || user.user_metadata?.full_name || "User",
-      email: user.email || "",
-      avatar: profile?.avatar_url || "",
-      role: profile?.role || user.user_metadata?.role || "citizen",
-      department: profile?.department,
-      mobile: profile?.phone || "",
-      isVerified: true,
-      createdAt: user.created_at || new Date().toISOString(),
-      updatedAt: user.updated_at || user.created_at || new Date().toISOString(),
-    } as any;
+      name: profile.full_name || "User",
+      email: profile.email || user.email || "",
+      avatar: profile.avatar_url || "",
+      role: profile.role,
+      mobile: profile.phone || "",
+      isVerified: Boolean(user.email_confirmed_at),
+      createdAt: profile.created_at || user.created_at,
+      updatedAt: profile.updated_at || profile.created_at || user.created_at,
+    };
   },
-  
+
   logout: async () => {
     const supabase = createClient();
+
     const { error } = await supabase.auth.signOut();
+
     if (error) throw error;
-  }
+  },
 };

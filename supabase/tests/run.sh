@@ -114,23 +114,31 @@ done
 # and not a missing GRANT. Applied after the migrations because it has to
 # cover the tables they create.
 as_pg "$PSQL -v ON_ERROR_STOP=1 -q -c \"
-  grant all on all tables in schema public to authenticated, service_role;
-  grant all on all sequences in schema public to authenticated, service_role;
-  grant all on all tables in schema storage to authenticated, service_role;
+  grant select, insert, update, delete on all tables in schema public to anon, authenticated, service_role;
+  grant usage, select on all sequences in schema public to anon, authenticated, service_role;
+  grant select, insert, update, delete on all tables in schema storage to anon, authenticated, service_role;
 \""
 
-echo "==> Running the smoke test"
-echo
+# Every suite except the stub, in filename order. 01 seeds the users the
+# later suites reuse, so order is load-bearing.
+#
+# Each suite runs exactly once and its output is kept: they seed their own
+# rows, so a second run against the same cluster would collide.
+: >"$WORKDIR/out"
 
-# Run once and keep the output: the suite seeds its own users, so a
-# second run against the same cluster would collide on them.
-as_pg "$PSQL -f '$STAGE/01_rls_smoke_test.sql'" >"$WORKDIR/out" 2>&1 || true
-cat "$WORKDIR/out"
+for file in $(ls "$TESTS"/[0-9][0-9]_*.sql | sort); do
+  name="$(basename "$file")"
+  case "$name" in 00_*) continue ;; esac
 
-echo
+  echo "==> Running $name"
+  echo
+  as_pg "$PSQL -f '$STAGE/$name'" 2>&1 | tee -a "$WORKDIR/out"
+  echo
+done
+
 if grep -q FAIL "$WORKDIR/out"; then
   echo "One or more checks reported FAIL." >&2
   exit 1
 fi
 
-echo "All checks passed."
+printf 'All checks passed (%s ok).\n' "$(grep -cE '\| ok *$' "$WORKDIR/out")"

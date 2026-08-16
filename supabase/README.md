@@ -57,6 +57,7 @@ Appointing an officer or a supervisor is the same call with `'officer'` or
 | `20260814120400_complaint_number_sequence` | Database-assigned complaint numbers |
 | `20260814120500_role_administration` | `set_user_role()`, and the exemption that makes role assignment possible at all |
 | `20260814120600_verification_column_authority` | Stops a citizen forging the supervisor's verdict |
+| `20260814120700_complaint_and_work_order_column_authority` | Column authority on complaints and work orders, plus the triage write path |
 
 Each file opens with a comment explaining what was wrong and why the fix
 is shaped the way it is. Those comments are the reference; this table is
@@ -95,6 +96,45 @@ Policies compare the first path segment as text rather than casting it to
 `uuid`. A cast inside a policy raises `22P02` on any object whose name does
 not parse, which would take out the whole query instead of hiding one row.
 
+## Column authority
+
+Row-level security decides which *rows* a caller may touch. It cannot say
+which *columns*, and both `complaints` and `work_orders` are written by two
+parties with different authority over the same row — the citizen owns the
+report, the municipality owns the triage. Whole-row policies gave each side
+everything.
+
+Triggers close that gap:
+
+| Trigger | Enforces |
+| --- | --- |
+| `complaints_enforce_authority` | Citizens cannot set status (except reopening), priority, SLA, department, ward or the `ai_*` fields. Staff cannot rewrite the citizen's title or description. Nobody changes `citizen_id`, `complaint_number` or `created_at`. |
+| `work_orders_enforce_authority` | `complaint_id` is fixed; only oversight reassigns an officer |
+| `verifications_enforce_authority` | Supervisor columns are supervisor-only, citizen columns citizen-only, `verified_at` derived |
+
+The classifier in `src/lib/services/ai.ts` runs in the reporting citizen's
+browser, so the triage columns have exactly one caller-facing entry point:
+`apply_complaint_triage()`, `SECURITY DEFINER`, owner-or-staff, and once
+only for a citizen. It resolves the department from a code rather than
+accepting an id, clamps `priority_score`, stamps `ai_processed_at` from the
+server clock, and leaves `sla_due_at` to the SLA trigger — so no deadline,
+timestamp or routing target is ever caller-supplied.
+
+That function sets a transaction-local `app.sanctioned_triage` flag so its
+own UPDATE passes the column trigger. `SECURITY DEFINER` changes the
+executing role, not `auth.uid()`, so without the flag the function would
+be blocked by the trigger written to accommodate it. It cannot be forged:
+PostgREST gives each request its own transaction, `set_config(..., true)`
+is scoped to it, and no function granted to `authenticated` sets arbitrary
+GUCs. There is a regression test that follows a successful triage with a
+direct PATCH in the same transaction and asserts it is still refused.
+
+**Remaining:** a citizen can still influence the *first* classification of
+their own report, because the classifier is client-side. Closing that means
+running it in an Edge Function or a route handler with a service-role key;
+nothing else would change, since `apply_complaint_triage()` is already the
+only write path.
+
 ## Testing
 
 ```bash
@@ -102,13 +142,32 @@ not parse, which would take out the whole query instead of hiding one row.
 ```
 
 Creates a throwaway PostgreSQL cluster, applies the platform stub
-(`authenticated`/`anon` roles, `auth.uid()`, the `storage` schema), applies
-every migration in order, then walks the full lifecycle as four different
-users — asserting both that the intended actor can act and that nobody
-else can. Needs PostgreSQL server binaries; no Docker and no Supabase
-project.
+(`authenticated`/`anon` roles, `auth.uid()` reading `request.jwt.claim.sub`
+as PostgREST sets it, the `storage` schema), applies every migration in
+order, then runs each suite:
 
-The negative cases are the point of the suite. It fails if a citizen can
-read another citizen's complaint, advance a work order, promote
-themselves, forge a supervisor's verdict, upload into another user's
-folder, or delete a recorded proof.
+| Suite | Covers |
+| --- | --- |
+| `01_rls_smoke_test.sql` | The full lifecycle as four users: file → assign → work → verify → confirm → resolve |
+| `02_auth_boundary_test.sql` | Who may read and write what: anonymous access, citizen confinement, officer confinement, authority limits, the triage path, role escalation |
+
+Needs PostgreSQL server binaries; no Docker and no Supabase project.
+
+The stub grants `anon` the same table privileges Supabase does. Without
+that, the "an anonymous caller sees nothing" checks would pass because of a
+missing GRANT and would keep passing if every policy were dropped.
+
+The negative cases are the point. The suite fails if a citizen can read
+another citizen's complaint, close their own complaint, rewrite its
+priority or SLA, transfer it to someone else, promote themselves, forge a
+supervisor's verdict, re-run their own triage, upload into another user's
+folder, or delete a recorded proof — or if an officer can take another
+officer's work order, repoint it at a different complaint, or rewrite the
+citizen's account of the issue.
+
+Route protection is verified separately, since it is not a database
+concern:
+
+```bash
+./scripts/verify-route-protection.sh
+```
