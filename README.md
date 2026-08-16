@@ -101,7 +101,7 @@ security model.
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
-| `npm test` | Unit tests — model-output parsing, schema validation and fallback selection (`node --test`, no test framework dependency) |
+| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, and the work-order state machine (`node --test`, no test framework dependency) |
 | `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
 | `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
 | `./scripts/verify-bootstrap.sh` | Prove `supabase/bootstrap.sql` upgrades an original-schema database and is safe to re-run |
@@ -221,6 +221,64 @@ Parsing and validation are the parts most worth testing, so they are:
 percentage confidences, out-of-range values, unknown enum members,
 arrays and empty bodies, plus each fallback path.
 
+## The officer work-order lifecycle
+
+A work order is the record of one repair, and its status is a state
+machine enforced by a database trigger — not by the buttons the page
+happens to render.
+
+```
+                    ┌──────────── the assigned officer ────────────┐
+assigned ─→ accepted ─→ in_progress ─→ proof_submitted
+    ↑                        ↑                │
+    │                        │  rework        │  ┌──── oversight ────┐
+    │                     reopened ←──────────┴──┤ supervisor_review │
+    │                                            │        ↓          │
+    └──── reassignment ──────────────────────────┤ citizen_confirm.  │
+         (oversight, unresolved only)            │        ↓          │
+                                                 │     resolved      │
+                                                 └───────────────────┘
+```
+
+**An officer's terminal state is `proof_submitted`.** Sign-off exists
+precisely so that an officer does not declare their own work finished.
+Before this, `assigned → resolved` in one PATCH closed a job nobody had
+visited.
+
+Every mutation validates authentication, role, assignment, and the
+current status; writes audit information; and returns a message written
+to be read. All of it at the database boundary, because the publishable
+key is in every browser and PostgREST accepts a hand-written PATCH:
+
+| Refused | By |
+|---|---|
+| Skipping a stage, or any backwards move except reopening | `work_orders_enforce_transition` |
+| Resolving your own work as an officer | the same, split by `is_oversight()` |
+| Submitting proof with no photograph attached | the same, counting `resolution_proofs` |
+| Advancing an unassigned work order | the same |
+| Backdating `accepted_at` / `started_at` / `completed_at` | the same — server-stamped, and a caller that sends one is refused |
+| Resolving, or even seeing, another officer's work order | the `Work order update access` policy |
+| Reassigning yourself a work order | `work_orders_enforce_authority` |
+| Repointing a work order at another complaint | the same |
+| Proof for a work order that is not yours | the `Assigned officer can add proof` policy |
+| Editing or deleting the audit trail | no INSERT/UPDATE/DELETE policy exists on it |
+
+**The audit trail and the citizen's status are triggers, not follow-up
+statements.** Both used to be application writes, explicitly
+best-effort — so the record of who did what could be missing exactly
+when something had gone wrong, and an officer could see `in_progress`
+while the citizen tracking that report still saw `assigned`. They now
+run in the same transaction as the transition: either all three happen or
+none does. Assignment propagates too, which it never did, so a newly
+assigned report no longer reads "Submitted" indefinitely.
+
+The officer's note travels with the transition into the citizen's
+timeline. `complaint_status_history.note` existed and had never been
+populated, so a citizen could be told "In Progress" but never why.
+
+Details, and what each trigger is compensating for, in
+[supabase/README.md](supabase/README.md#the-work-order-lifecycle).
+
 ## Current state
 
 Officer and government screens read live database state. The completion
@@ -238,11 +296,17 @@ uploads are retryable, and the tracking timeline is built from recorded
 transitions rather than inferred from the current status. See
 [supabase/README.md](supabase/README.md#the-complaint-lifecycle).
 
+The officer path — accept, start, photograph, submit, sign off — is
+complete and enforced at the database boundary. See
+[The officer work-order lifecycle](#the-officer-work-order-lifecycle).
+
 Known functional gaps: complaints are not assigned to a ward (the `wards`
 table has no geometry to derive one from), nothing writes to the
 `notifications` table yet — the in-app feed is derived from complaint
-state instead — and there is no UI for a supervisor to record a verdict or
-for a citizen to reject a repair, though the database supports both.
+state instead — a citizen cannot reject a repair themselves (a supervisor
+records that verdict on their behalf), and the authority queue lists
+existing work orders, so a complaint with no work order at all is
+assigned from the work-order page rather than from the queue.
 
 ## Naming
 

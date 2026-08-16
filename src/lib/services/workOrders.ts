@@ -1,7 +1,9 @@
 import { createClient } from "@/lib/supabase/client";
 import { NotSignedInError } from "@/lib/services/errors";
 import type {
+  AssignableOfficer,
   WorkOrder,
+  WorkOrderHistoryEntry,
   WorkOrderStatus,
   WorkOrderUpdate,
 } from "@/types/workOrder";
@@ -279,27 +281,54 @@ function mapWorkOrder(row: WorkOrderRow): WorkOrder {
   };
 }
 
-/**
- * Work-order status -> the complaint status a citizen should see.
+/*
+ * The work-order-to-complaint status mapping used to live here, applied
+ * by a third UPDATE after every transition. It is now
+ * sync_complaint_status() in the database, firing in the same
+ * transaction as the transition itself.
  *
- * The previous implementation had this mapping written out but
- * commented off, so advancing a work order never moved the complaint
- * and the citizen's tracking view silently stalled.
+ * It had to move. As an application statement it was explicitly
+ * best-effort — "if the complaint sync fails, the transition still
+ * stands" — so an officer could see `in_progress` while the citizen
+ * tracking that same report still saw `assigned`, with nothing to
+ * reconcile them and no error either would ever be shown. And creating
+ * a work order propagated nothing at all, so assignment itself left the
+ * citizen looking at "Submitted".
  */
-const COMPLAINT_STATUS_FOR: Partial<
-  Record<WorkOrderStatus, ComplaintStatus>
-> = {
-  assigned: "assigned",
-  accepted: "accepted",
-  in_progress: "in_progress",
-  proof_submitted: "proof_submitted",
-  supervisor_review: "supervisor_review",
-  citizen_confirmation: "citizen_confirmation",
-  resolved: "resolved",
-  reopened: "reopened",
-};
+
+/*
+ * The client-side state machine lives in workOrders.transitions.ts,
+ * without the Supabase client, so it can be unit-tested — see
+ * workOrders.test.ts, which checks it against the SQL it mirrors.
+ * Re-exported so callers still see one surface.
+ */
+export { allowedTransitions } from "./workOrders.transitions";
 
 export const workOrderService = {
+  /**
+   * The signed-in user's own assignments.
+   *
+   * Exists because every officer screen was calling
+   * `getWorkOrders({ officerId: user?.id })` after a
+   * `getCurrentUser().catch(() => null)`. When that lookup failed —
+   * or when the viewer was a supervisor, who has the officer workspace —
+   * `officerId` was `undefined`, the filter was dropped, and the query
+   * fell back to whatever row-level security allowed. For a supervisor
+   * that is the entire city, so "your work orders for today" quietly
+   * became everyone's.
+   *
+   * Resolving the identity here means it cannot be omitted, and a
+   * missing session raises instead of widening the query.
+   */
+  async getMyWorkOrders(filters?: {
+    status?: WorkOrderStatus;
+    priority?: string;
+  }): Promise<WorkOrder[]> {
+    const officerId = await getAuthenticatedUserId();
+
+    return this.getWorkOrders({ ...filters, officerId });
+  },
+
   async getWorkOrders(filters?: {
     status?: WorkOrderStatus;
     priority?: string;
@@ -316,9 +345,13 @@ export const workOrderService = {
       query = query.eq("status", filters.status);
     }
 
-    // Only filter by officer when a real id is supplied. The previous
-    // mock filtered on an undefined id and returned everything, which
-    // made the officer view look populated when it was not scoped.
+    /*
+     * An explicit officer filter narrows the query; omitting it means
+     * "whatever this caller may see", which is the city for oversight
+     * and their own assignments for an officer. Both are legitimate —
+     * the authority queue wants the former — so the choice is the
+     * caller's, made by picking this method or getMyWorkOrders().
+     */
     if (filters?.officerId) {
       query = query.eq("officer_id", filters.officerId);
     }
@@ -460,87 +493,144 @@ export const workOrderService = {
   },
 
   /**
-   * Advances a work order and keeps the parent complaint in step.
+   * Advances a work order.
    *
-   * Three writes, in order of importance:
-   *   1. work_orders          — the transition itself
-   *   2. work_order_updates   — the audit trail entry
-   *   3. complaints.status    — what the citizen sees
+   * One call now, where there were three writes. advance_work_order()
+   * performs the transition, and triggers in the same transaction write
+   * the audit row and move the parent complaint — so either all three
+   * happen or none does.
    *
-   * Steps 2 and 3 are best-effort: if the audit insert or the
-   * complaint sync fails, the transition itself still stands rather
-   * than leaving the officer unable to progress. Failures are logged,
-   * not swallowed silently.
+   * What that replaced, and why it had to go:
+   *
+   *   - Three separate statements, two of them deliberately
+   *     best-effort. The audit entry and the citizen's status were
+   *     allowed to fail silently, which meant the record of who changed
+   *     what could be missing precisely when something had gone wrong.
+   *   - A caller-supplied `timestamp` written into accepted_at,
+   *     started_at and completed_at. Those are SLA evidence; a browser
+   *     that can set them can backdate a repair. The database now
+   *     stamps them and refuses a caller that tries.
+   *
+   * `update.timestamp` is therefore ignored rather than sent. It stays
+   * on WorkOrderUpdate because callers still pass it and dropping the
+   * field would be a breaking change for no gain; the type documents
+   * that it is advisory.
    */
   async updateWorkOrderStatus(
     update: WorkOrderUpdate
   ): Promise<WorkOrder> {
     const supabase = createClient();
-    const now = update.timestamp || new Date().toISOString();
 
     /*
-     * The audit row's created_by must equal auth.uid() to satisfy the
-     * "Work order update insert" policy, so it is resolved from the
-     * session here rather than trusted from the caller. The page
-     * previously passed a literal "unknown-officer" when the profile
-     * lookup lost its race, which is not a uuid and failed the insert.
+     * Resolved before the call, not to send it — the database reads
+     * auth.uid() itself for both the policy and the audit row's actor —
+     * but so that a signed-out officer gets "you need to be signed in"
+     * instead of a policy violation from PostgREST.
      */
-    const authorId = await getAuthenticatedUserId();
+    await getAuthenticatedUserId();
 
-    const patch: Record<string, unknown> = { status: update.status };
+    const { error } = await supabase.rpc("advance_work_order", {
+      p_work_order_id: update.workOrderId,
+      p_status: update.status,
+      p_note: update.notes ?? null,
+    });
 
-    if (update.status === "accepted") patch.accepted_at = now;
-    if (update.status === "in_progress") patch.started_at = now;
-    if (update.status === "resolved") patch.completed_at = now;
+    if (error) {
+      console.error("Work order transition refused:", error.message);
 
-    const { error: updateError } = await supabase
-      .from("work_orders")
-      .update(patch)
-      .eq("id", update.workOrderId);
-
-    if (updateError) {
-      console.error("Work order status update error:", updateError.message);
-      throw updateError;
+      /*
+       * The database's messages are written to be read by the officer —
+       * "Submit at least one photograph of the completed work first",
+       * "A work order cannot move from resolved to in_progress" — so
+       * they are surfaced rather than replaced with "please try again",
+       * which is advice that cannot work here.
+       */
+      throw new Error(
+        error.message || "That change to the work order was refused."
+      );
     }
 
-    // Audit trail.
-    const { error: logError } = await supabase
-      .from("work_order_updates")
-      .insert({
-        work_order_id: update.workOrderId,
-        status: update.status,
-        note: update.notes ?? null,
-        created_by: authorId,
-      });
-
-    if (logError) {
-      console.error("Work order audit entry failed:", logError.message);
-    }
-
+    /*
+     * Reloaded rather than returned from the RPC. advance_work_order()
+     * returns the work_orders row, but the page needs the joined view —
+     * complaint, department, officer, evidence — and reading it back is
+     * also how the officer sees the trigger's own effects (the stamped
+     * timestamp, the synced complaint status) rather than a guess at
+     * them.
+     */
     const refreshed = await this.getWorkOrderById(update.workOrderId);
 
     if (!refreshed) {
       throw new Error("Work order could not be reloaded after update.");
     }
 
-    // Keep the citizen-facing complaint status aligned.
-    const complaintStatus = COMPLAINT_STATUS_FOR[update.status];
+    return refreshed;
+  },
 
-    if (complaintStatus) {
-      const { error: syncError } = await supabase
-        .from("complaints")
-        .update({ status: complaintStatus })
-        .eq("id", refreshed.complaintId);
+  /**
+   * The recorded transitions for a work order, newest first.
+   *
+   * work_order_updates has existed since the initial schema and was
+   * read for exactly one thing: the most recent note. So the audit
+   * trail was written and then thrown away, and the "Timeline" an
+   * officer saw was reconstructed from four timestamp columns on the
+   * work order — which cannot show who did anything, and cannot show a
+   * reopening at all, because a second visit overwrites started_at.
+   *
+   * Actor names come from the join; a null created_by (a transition with
+   * no session behind it — a migration, a server task) is reported as
+   * such rather than attributed to somebody.
+   */
+  async getWorkOrderHistory(
+    workOrderId: string
+  ): Promise<WorkOrderHistoryEntry[]> {
+    const supabase = createClient();
 
-      if (syncError) {
-        console.error(
-          "Complaint status sync failed:",
-          syncError.message
-        );
-      }
+    const { data, error } = await supabase
+      .from("work_order_updates")
+      .select(
+        `
+        id,
+        status,
+        note,
+        created_at,
+        actor:profiles!work_order_updates_created_by_fkey ( id, full_name )
+        `
+      )
+      .eq("work_order_id", workOrderId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      /*
+       * An unreadable history must not take out the work order view: the
+       * officer came here to do the job, and the trail is context.
+       */
+      console.error("Work order history unavailable:", error.message);
+      return [];
     }
 
-    return refreshed;
+    return (data ?? []).map((row) => {
+      /*
+       * created_by is a many-to-one foreign key, so PostgREST returns a
+       * single object — but it types every embedded resource as an
+       * array, so both shapes are unwrapped rather than asserted away.
+       */
+      const embedded = row.actor as
+        | { id: string; full_name: string | null }
+        | { id: string; full_name: string | null }[]
+        | null;
+
+      const actor = Array.isArray(embedded) ? (embedded[0] ?? null) : embedded;
+
+      return {
+        id: row.id as string,
+        status: row.status as WorkOrderStatus,
+        note: (row.note as string | null) ?? null,
+        actorId: actor?.id ?? null,
+        actorName: actor?.full_name ?? null,
+        at: row.created_at as string,
+      };
+    });
   },
 
   /**
@@ -575,6 +665,49 @@ export const workOrderService = {
 
     if (!file.type.startsWith("image/")) {
       throw new Error("Proof of work must be a photograph.");
+    }
+
+    /*
+     * Checked before the object is stored, not after.
+     *
+     * The "Assigned officer can add proof" policy already refuses the
+     * resolution_proofs row for a work order that is not the uploader's,
+     * and the storage policy refuses a path that is not under their own
+     * id — so nothing unauthorised was ever persisted. But the upload
+     * happened first, so an officer photographing the wrong job
+     * discovered it only after their photo had been stored and then
+     * cleaned up again. Reading the work order first turns that into a
+     * sentence they can act on.
+     *
+     * This is a courtesy, not the boundary: RLS below is what makes it
+     * true, and it still runs.
+     */
+    const { data: target, error: lookupError } = await supabase
+      .from("work_orders")
+      .select("id, officer_id, status")
+      .eq("id", params.workOrderId)
+      .maybeSingle();
+
+    if (lookupError) {
+      console.error("Work order lookup before upload failed:", lookupError.message);
+    }
+
+    if (!target) {
+      throw new Error(
+        "That work order is not available to you, so proof cannot be attached to it."
+      );
+    }
+
+    if (target.officer_id !== uploaderId) {
+      throw new Error(
+        "Only the officer assigned to this work order can submit proof for it."
+      );
+    }
+
+    if (target.status !== "in_progress" && target.status !== "reopened") {
+      throw new Error(
+        "Proof can only be added while the work is in progress."
+      );
     }
 
     const extension = file.name.split(".").pop()?.toLowerCase() || "jpg";
@@ -664,7 +797,15 @@ export const workOrderService = {
       return reassigned;
     }
 
-    // work_order_number and assigned_at are set by database triggers.
+    /*
+     * work_order_number and assigned_at are set by database triggers,
+     * and the complaint's own status is moved to `assigned` by
+     * sync_complaint_status() firing on this insert.
+     *
+     * That last part used to be a follow-up UPDATE here whose result was
+     * not even checked, so a citizen whose report had just been assigned
+     * could still be looking at "Submitted" indefinitely.
+     */
     const { data, error } = await supabase
       .from("work_orders")
       .insert({
@@ -678,16 +819,43 @@ export const workOrderService = {
 
     if (error) {
       console.error("Work order creation error:", error.message);
-      throw error;
+      throw new Error(
+        error.message ||
+          "That complaint could not be assigned. Only a supervisor or administrator can assign work."
+      );
     }
-
-    await supabase
-      .from("complaints")
-      .update({ status: "assigned" })
-      .eq("id", params.complaintId);
 
     const created = await this.getWorkOrderById(data.id as string);
     if (!created) throw new Error("New work order could not be reloaded.");
     return created;
+  },
+
+  /**
+   * Officers and supervisors who can be given work, least-loaded first.
+   *
+   * The authority queue could show that a complaint was unassigned but
+   * had no way to list anybody to assign it to. Through
+   * assignable_officers(), which is SECURITY INVOKER — so a citizen
+   * calling it gets nothing, because the profile policies still apply.
+   */
+  async getAssignableOfficers(): Promise<AssignableOfficer[]> {
+    const supabase = createClient();
+
+    const { data, error } = await supabase.rpc("assignable_officers");
+
+    if (error) {
+      console.error("Assignable officer lookup failed:", error.message);
+      throw new Error(
+        error.message || "The list of officers could not be loaded."
+      );
+    }
+
+    return (data ?? []).map(
+      (row: { id: string; full_name: string | null; open_work_orders: number }) => ({
+        id: row.id,
+        name: row.full_name ?? "Unnamed officer",
+        openWorkOrders: Number(row.open_work_orders ?? 0),
+      })
+    );
   },
 };
