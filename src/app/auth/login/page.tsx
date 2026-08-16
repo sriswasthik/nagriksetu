@@ -3,7 +3,7 @@
 import { getCurrentProfile, signIn } from "@/lib/services/auth";
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, Mail, ShieldCheck } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -24,6 +24,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AuthAside, AuthLayout } from "@/components/layout/AuthLayout";
 import { APP_NAME } from "@/lib/constants";
+import { homeForRole, isAppRole } from "@/lib/auth/roles";
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -35,8 +36,21 @@ type LoginFormValues = z.infer<typeof loginSchema>;
 export default function LoginPage() {
   const router = useRouter();
 
+  const searchParams = useSearchParams();
+
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  /*
+   * The proxy sets ?error=profile-unavailable when a session is valid but
+   * its profile cannot be read. Saying so beats an unexplained bounce
+   * back to the sign-in form. Read during render, which is why the auth
+   * segment opts into dynamic rendering — see ../layout.tsx.
+   */
+  const [error, setError] = useState<string | null>(
+    searchParams.get("error") === "profile-unavailable"
+      ? "Your account exists, but we couldn't load your profile. Please contact support."
+      : null
+  );
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
@@ -68,29 +82,35 @@ export default function LoginPage() {
         );
       }
 
-      /*
-       * Role-based navigation.
-       *
-       * Public registration creates citizens.
-       * Official roles are assigned separately.
-       */
-      switch (profile.role) {
-        case "citizen":
-          router.replace("/citizen");
-          break;
-
-        case "officer":
-        case "supervisor":
-          router.replace("/officer");
-          break;
-
-        case "government_admin":
-          router.replace("/government");
-          break;
-
-        default:
-          throw new Error("Your account has an invalid or unsupported role.");
+      if (!isAppRole(profile.role)) {
+        throw new Error("Your account has an invalid or unsupported role.");
       }
+
+      /*
+       * Role-based navigation, from the same table the proxy and the
+       * workspace layouts use. Public registration creates citizens;
+       * official roles are assigned separately.
+       */
+      const home = homeForRole(profile.role);
+
+      /*
+       * Return the user to whatever protected page sent them here, but
+       * only if their role may actually enter it — otherwise a stale
+       * /government link would bounce them straight back out again. Only
+       * same-origin paths are honoured, so ?next= cannot be used to
+       * redirect someone off-site after they authenticate.
+       */
+      const next = searchParams.get("next");
+      const canReturn =
+        next !== null &&
+        next.startsWith("/") &&
+        !next.startsWith("//") &&
+        next.startsWith(home);
+
+      router.replace(canReturn ? next : home);
+
+      // Re-run the server layouts so they see the new session.
+      router.refresh();
     } catch (err) {
       console.error("Login error:", err);
 

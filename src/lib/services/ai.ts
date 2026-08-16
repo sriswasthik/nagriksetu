@@ -866,15 +866,20 @@ export async function processComplaintWithAI(
      * MARK PROCESSING
      * ------------------------------------------------------ */
 
+    /*
+     * Routed through set_complaint_ai_status() rather than a direct
+     * PATCH. enforce_complaint_authority() blocks citizens from writing
+     * the ai_* columns, because this whole function runs in the
+     * reporting citizen's browser; the function is the sanctioned path
+     * and re-checks that the caller owns the complaint.
+     */
     const {
       error: processingError,
-    } = await supabase
-      .from("complaints")
-      .update({
-        ai_analysis_status: "processing",
-        ai_error_message: null,
-      })
-      .eq("id", complaintId);
+    } = await supabase.rpc("set_complaint_ai_status", {
+      p_complaint_id: complaintId,
+      p_status: "processing",
+      p_error: null,
+    });
 
     if (processingError) {
       throw processingError;
@@ -916,15 +921,13 @@ export async function processComplaintWithAI(
       !response.success ||
       !response.result
     ) {
-      await supabase
-        .from("complaints")
-        .update({
-          ai_analysis_status: "failed",
-          ai_error_message:
-            response.error ??
-            "AI analysis failed.",
-        })
-        .eq("id", complaintId);
+      await supabase.rpc("set_complaint_ai_status", {
+        p_complaint_id: complaintId,
+        p_status: "failed",
+        p_error:
+          response.error ??
+          "AI analysis failed.",
+      });
 
       return response;
     }
@@ -972,48 +975,17 @@ export async function processComplaintWithAI(
      * DEPARTMENT
      * ------------------------------------------------------ */
 
+    /*
+     * Only the code is computed here. apply_complaint_triage() resolves
+     * it to a department id server-side, so a caller cannot route a
+     * complaint to an arbitrary department by passing its uuid. An
+     * unknown code leaves the complaint unrouted, as the previous
+     * client-side lookup did.
+     */
     const departmentCode =
       mapAIDepartmentToCode(
         result.department
       );
-
-    let departmentId: string | null =
-      null;
-
-    const {
-      data: departmentData,
-      error: departmentError,
-    } = await supabase
-      .from("departments")
-      .select("id, name, code")
-      .eq("code", departmentCode)
-      .maybeSingle();
-
-    if (departmentError) {
-      console.warn(
-        "Department lookup warning:",
-        departmentError.message
-      );
-    }
-
-    if (departmentData) {
-      departmentId =
-        departmentData.id;
-
-      console.log(
-        "Department resolved:",
-        departmentData
-      );
-    } else {
-      console.warn(
-        "Department not found. Continuing without department_id.",
-        {
-          aiDepartment:
-            result.department,
-          departmentCode,
-        }
-      );
-    }
 
     /* --------------------------------------------------------
      * LOG FINAL RESULT
@@ -1061,78 +1033,37 @@ export async function processComplaintWithAI(
      * SAVE EVERYTHING
      * ------------------------------------------------------ */
 
+    /*
+     * One RPC instead of a whole-row PATCH.
+     *
+     * apply_complaint_triage() is the only path a citizen has to the
+     * triage columns, and it is once-only for them: without that, a
+     * reporter could re-run the classifier until it produced a priority
+     * they liked, or overwrite a triage a supervisor had corrected. It
+     * also stamps ai_processed_at from the server clock and lets the
+     * SLA trigger derive sla_due_at, so neither can be supplied by the
+     * caller.
+     */
     const {
       error: updateError,
-    } = await supabase
-      .from("complaints")
-      .update({
-        /*
-         * NORMALIZED COMPLAINT VALUES
-         */
-        category:
-          databaseCategory,
-
-        priority_level:
-          priorityLevel,
-
-        priority_score:
-          priorityScore,
-
-        priority_reason:
-          priorityReason,
-
-        /*
-         * DEPARTMENT
-         */
-        department_id:
-          departmentId,
-
-        /*
-         * AI VALUES
-         */
-        ai_analysis_status:
-          "completed",
-
-        ai_category:
-          result.category,
-
-        ai_severity:
-          result.severity,
-
-        ai_priority:
-          result.priority,
-
-        ai_department:
-          result.department,
-
-        ai_confidence:
-          result.confidence,
-
-        ai_summary:
-          result.summary,
-
-        ai_possible_duplicate:
-          result.possibleDuplicate,
-
-        ai_duplicate_complaint_id:
-          result.duplicateComplaintId,
-
-        ai_reasoning:
-          result.reasoning,
-
-        ai_model:
-          AI_MODEL_NAME,
-
-        ai_processed_at:
-          new Date().toISOString(),
-
-        ai_error_message:
-          null,
-      })
-      .eq(
-        "id",
-        complaintId
-      );
+    } = await supabase.rpc("apply_complaint_triage", {
+      p_complaint_id: complaintId,
+      p_category: databaseCategory,
+      p_priority_level: priorityLevel,
+      p_priority_score: priorityScore,
+      p_priority_reason: priorityReason,
+      p_department_code: departmentCode,
+      p_ai_category: result.category,
+      p_ai_severity: result.severity,
+      p_ai_priority: result.priority,
+      p_ai_department: result.department,
+      p_ai_confidence: result.confidence,
+      p_ai_summary: result.summary,
+      p_ai_reasoning: result.reasoning,
+      p_ai_possible_duplicate: result.possibleDuplicate,
+      p_ai_duplicate_complaint_id: result.duplicateComplaintId,
+      p_ai_model: AI_MODEL_NAME,
+    });
 
     if (updateError) {
       console.error(
@@ -1206,21 +1137,14 @@ export async function processComplaintWithAI(
     );
 
     try {
-      await supabase
-        .from("complaints")
-        .update({
-          ai_analysis_status:
-            "failed",
-
-          ai_error_message:
-            error instanceof Error
-              ? error.message
-              : "AI processing failed.",
-        })
-        .eq(
-          "id",
-          complaintId
-        );
+      await supabase.rpc("set_complaint_ai_status", {
+        p_complaint_id: complaintId,
+        p_status: "failed",
+        p_error:
+          error instanceof Error
+            ? error.message
+            : "AI processing failed.",
+      });
     } catch (secondaryError) {
       console.error(
         "Could not save AI failure state:",

@@ -32,7 +32,6 @@ export default function OfficerDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [officerName, setOfficerName] = useState<string | null>(null);
-  const [department, setDepartment] = useState<string>("");
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -42,7 +41,6 @@ export default function OfficerDashboard() {
       const user = await authService.getCurrentUser().catch(() => null);
 
       if (user?.name) setOfficerName(user.name.split(" ")[0]);
-      if (user?.department) setDepartment(user.department);
 
       const data = await workOrderService.getWorkOrders({
         officerId: user?.id,
@@ -83,19 +81,18 @@ export default function OfficerDashboard() {
       new Date(wo.updatedAt).toDateString() === new Date().toDateString()
   );
 
-  const departmentLabel = department
-    ? department.replace("dept-", "").toUpperCase()
-    : null;
+  /*
+   * The department subtitle was read from `profile.department`, a column
+   * public.profiles does not have, so it was always empty and this
+   * header always rendered the fallback below. Removed rather than
+   * wired up, which would change what the page shows.
+   */
 
   return (
     <div>
       <PageHeader
         title={officerName ? `Welcome, ${officerName}` : "Field operations"}
-        description={
-          departmentLabel
-            ? `Your assigned work orders · ${departmentLabel} department`
-            : "Your assigned work orders for today."
-        }
+        description="Your assigned work orders for today."
         action={
           <Button asChild>
             <Link href="/officer/work-orders">

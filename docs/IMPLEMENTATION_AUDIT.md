@@ -19,11 +19,14 @@ Read-only audit: no feature work, no UI changes, no architectural changes.
 > not hold — a citizen could forge a supervisor's verdict on the shared
 > `verifications` row.
 >
-> The **Phase 0 security items are all still open**: route protection in
-> `proxy.ts`, the unauthenticated debug route, the legacy constant-password
-> path in `authService`, and the `user_metadata.role` fallback. None of
-> those are database concerns, so none were touched. Read them before
-> deploying.
+> The **Phase 0 security items are now closed** by the auth-hardening
+> work: route protection, the unauthenticated debug route (deleted), the
+> constant-password path in `authService` (deleted), and the
+> `user_metadata.role` fallback (removed). That work also found something
+> this audit missed — the `proxy.ts` it recommended adding checks to was
+> at the repository root while the app lives in `src/app`, so Next.js
+> never loaded it and sessions were never refreshed either. See
+> [Roles and authorization](../README.md#roles-and-authorization).
 
 ## The single most important finding
 

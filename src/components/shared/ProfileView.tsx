@@ -82,7 +82,18 @@ export function ProfileView() {
     try {
       await authService.logout();
       toast.success("Signed out");
-      router.push("/auth/login");
+
+      /*
+       * replace + refresh, not push.
+       *
+       * push leaves the protected page in history, and Next.js keeps
+       * rendered segments in its client-side Router Cache, so Back
+       * showed the signed-out user their old dashboard chrome. refresh()
+       * discards that cache and re-runs the server layouts, which now
+       * redirect.
+       */
+      router.replace("/auth/login");
+      router.refresh();
     } catch (signOutError) {
       console.error("Sign out failed:", signOutError);
       toast.error("Couldn't sign you out", {
