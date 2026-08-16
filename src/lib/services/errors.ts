@@ -139,11 +139,24 @@ export function toActionableError(error: unknown, fallback: string): Error {
    * missing-migration situation, arriving as a constraint error instead.
    */
   if (code === "23502") {
+    const column = columnFromNotNull(message);
+
+    if (
+      column === "complaint_number" ||
+      column === "work_order_number"
+    ) {
+      return new Error(
+        "This CityTrace deployment is missing part of its database schema, " +
+          `so the field \`${column}\` could not be filled. ` +
+          "Paste supabase/bootstrap.sql into the Supabase SQL editor and run " +
+          "it, then try again.",
+        { cause: error }
+      );
+    }
+
+    const composed = [message, details, hint].filter(Boolean).join(" — ");
     return new Error(
-      "This CityTrace deployment is missing part of its database schema, " +
-        `so the field \`${columnFromNotNull(message)}\` could not be filled. ` +
-        "Paste supabase/bootstrap.sql into the Supabase SQL editor and run " +
-        "it, then try again.",
+      composed || fallback,
       { cause: error }
     );
   }

@@ -367,8 +367,8 @@ async function submitThroughInsert(
     submission_key: input.submissionKey,
   });
 
-  // 42703 — no submission_key column, so this schema predates it.
-  if (attempt.error && attempt.error.code === "42703") {
+  // Missing submission_key in either Postgres or PostgREST schema cache.
+  if (attempt.error && isMissingSubmissionKeyColumn(attempt.error)) {
     attempt = await insertComplaint(supabase, base);
   }
 
@@ -382,8 +382,7 @@ async function submitThroughInsert(
    */
   if (
     attempt.error &&
-    attempt.error.code === "23502" &&
-    attempt.error.message?.includes("complaint_number")
+    isComplaintNumberNotNullViolation(attempt.error)
   ) {
     console.warn(
       "This database assigns no complaint number, so one was generated " +
@@ -391,6 +390,17 @@ async function submitThroughInsert(
         "guarantees these are unique."
     );
 
+    attempt = await insertComplaint(supabase, {
+      ...base,
+      ...(attempt.triedSubmissionKey
+        ? { submission_key: input.submissionKey }
+        : {}),
+      complaint_number: fallbackComplaintNumber(),
+    });
+  }
+
+  // Extremely unlikely, but a generated fallback number can still collide.
+  if (attempt.error && isComplaintNumberUniqueViolation(attempt.error)) {
     attempt = await insertComplaint(supabase, {
       ...base,
       ...(attempt.triedSubmissionKey
@@ -423,6 +433,52 @@ async function submitThroughInsert(
   }
 
   return attempt.data;
+}
+
+function isMissingSubmissionKeyColumn(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+}): boolean {
+  const haystack = `${error.message ?? ""} ${error.details ?? ""} ${error.hint ?? ""}`.toLowerCase();
+
+  /*
+   * Postgres can report missing column as 42703, while PostgREST can
+   * emit PGRST204 when its schema cache cannot find the requested field.
+   */
+  return (
+    (error.code === "42703" || error.code === "PGRST204") &&
+    haystack.includes("submission_key")
+  );
+}
+
+function isComplaintNumberNotNullViolation(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+}): boolean {
+  if (error.code !== "23502") {
+    return false;
+  }
+
+  const haystack = `${error.message ?? ""} ${error.details ?? ""} ${error.hint ?? ""}`.toLowerCase();
+  return haystack.includes("complaint_number");
+}
+
+function isComplaintNumberUniqueViolation(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+}): boolean {
+  if (error.code !== "23505") {
+    return false;
+  }
+
+  const haystack = `${error.message ?? ""} ${error.details ?? ""} ${error.hint ?? ""}`.toLowerCase();
+  return haystack.includes("complaint_number");
 }
 
 interface InsertAttempt {
@@ -1206,10 +1262,16 @@ export async function getComplaintDetails(
   ]);
 
   if (historyResult.error) {
-    console.error(
-      "Status history unavailable:",
-      historyResult.error.message
-    );
+    if (isMissingStatusHistoryTable(historyResult.error)) {
+      console.warn(
+        "Status history is unavailable in this deployment; showing the complaint without timeline history."
+      );
+    } else {
+      console.error(
+        "Status history unavailable:",
+        historyResult.error.message
+      );
+    }
   }
 
   if (departmentResult.error) {
@@ -1259,4 +1321,22 @@ export async function getComplaintDetails(
 
     history: (historyResult.data ?? []) as ComplaintStatusEvent[],
   };
+}
+
+function isMissingStatusHistoryTable(error: {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+}): boolean {
+  if (isMissingDatabaseObject(error)) {
+    return true;
+  }
+
+  const haystack = `${error.message ?? ""} ${error.details ?? ""} ${error.hint ?? ""}`.toLowerCase();
+
+  return (
+    (error.code === "PGRST205" || error.code === "42P01") &&
+    haystack.includes("complaint_status_history")
+  );
 }

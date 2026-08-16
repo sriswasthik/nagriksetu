@@ -1123,27 +1123,22 @@ export async function processComplaintWithAI(
       result,
     };
   } catch (error) {
-    console.error(
-      "================================================"
-    );
-    console.error(
-      "AI PROCESSING FAILED"
-    );
-    console.error(
-      error
-    );
-    console.error(
-      "================================================"
-    );
+    const message =
+      error instanceof Error
+        ? error.message
+        : "AI processing failed.";
+
+    /*
+     * This path is handled and returned to the caller, so keep it as a
+     * warning instead of a console error that looks like an unhandled crash.
+     */
+    console.warn("AI processing failed:", message);
 
     try {
       await supabase.rpc("set_complaint_ai_status", {
         p_complaint_id: complaintId,
         p_status: "failed",
-        p_error:
-          error instanceof Error
-            ? error.message
-            : "AI processing failed.",
+        p_error: message,
       });
     } catch (secondaryError) {
       console.error(
@@ -1155,10 +1150,7 @@ export async function processComplaintWithAI(
     return {
       success: false,
       status: "failed",
-      error:
-        error instanceof Error
-          ? error.message
-          : "AI processing failed.",
+      error: message,
     };
   }
 }
