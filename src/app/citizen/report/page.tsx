@@ -31,6 +31,7 @@ import {
   createComplaint,
   uploadComplaintEvidence,
 } from "@/lib/services/complaints";
+import { isNotSignedIn } from "@/lib/services/errors";
 import type { Complaint } from "@/types/complaint";
 
 /**
@@ -262,6 +263,8 @@ export default function ReportIssuePage() {
         wardId: null,
       });
     } catch (error) {
+      // `cause` carries the original PostgrestError, which has the code
+      // and constraint details the message alone does not.
       console.error("Failed to submit report:", error);
 
       /*
@@ -270,9 +273,11 @@ export default function ReportIssuePage() {
        * the same submission key rather than starting over.
        */
       setSubmitError(
-        error instanceof Error && error.message
-          ? error.message
-          : "We couldn't submit your report. Please check your connection and try again."
+        isNotSignedIn(error)
+          ? "Your session expired while you were filling this in. Sign in again in another tab, then press Submit — nothing you have typed is lost."
+          : error instanceof Error && error.message
+            ? error.message
+            : "We couldn't submit your report. Please check your connection and try again."
       );
       setIsSubmitting(false);
       setUploadProgress(null);

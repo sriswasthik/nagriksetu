@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
+import { NotSignedInError, toActionableError } from "@/lib/services/errors";
 
 import type {
   Complaint,
@@ -96,7 +97,21 @@ export function validateEvidenceFile(file: File): EvidenceFileCheck {
  * ============================================================
  */
 
-async function getAuthenticatedUserId(): Promise<string> {
+/**
+ * The signed-in user's id, or null when nobody is signed in.
+ *
+ * getUser() reports a missing session by returning an
+ * AuthSessionMissingError in `error`, not by returning a null user with
+ * no error. Rethrowing that made an ordinary signed-out visit look like a
+ * fault: the header's notification tray logged
+ * "AuthSessionMissingError: Auth session missing!" with a stack trace on
+ * every page load before sign-in.
+ *
+ * Being signed out is a state. Callers that need a session use
+ * requireAuthenticatedUserId(); callers that are merely speculative use
+ * this and render nothing.
+ */
+export async function getAuthenticatedUserIdOrNull(): Promise<string | null> {
   const supabase = createClient();
 
   const {
@@ -105,16 +120,29 @@ async function getAuthenticatedUserId(): Promise<string> {
   } = await supabase.auth.getUser();
 
   if (error) {
-    throw error;
+    // AuthSessionMissingError is the no-session case; anything else is a
+    // real transport or provider failure worth reporting.
+    if (error.name === "AuthSessionMissingError") {
+      return null;
+    }
+
+    console.error("Session lookup failed:", error.message);
+    return null;
   }
 
-  if (!user) {
-    throw new Error(
-      "You must be logged in to perform this action."
+  return user?.id ?? null;
+}
+
+async function getAuthenticatedUserId(): Promise<string> {
+  const userId = await getAuthenticatedUserIdOrNull();
+
+  if (!userId) {
+    throw new NotSignedInError(
+      "You need to be signed in to do that. Please sign in and try again."
     );
   }
 
-  return user.id;
+  return userId;
 }
 
 /**
@@ -176,12 +204,26 @@ export async function createComplaint(
   });
 
   if (error) {
-    console.error("Create complaint error:", error.message);
-    throw new Error(error.message || "We couldn't file your report.");
+    /*
+     * Normalised rather than rethrown. A PostgrestError is a plain
+     * object, so `instanceof Error` was false at every call site and the
+     * real reason never reached the citizen — a missing-migration
+     * constraint violation showed up as "Failed to submit report: {}".
+     */
+    const actionable = toActionableError(
+      error,
+      "We couldn't file your report. Please try again."
+    );
+
+    console.error("Create complaint error:", actionable.message, error);
+    throw actionable;
   }
 
   if (!data) {
-    throw new Error("The report was not returned after submission.");
+    throw new Error(
+      "Your report may not have been saved — the server did not confirm it. " +
+        "Check your reports before submitting again."
+    );
   }
 
   /*

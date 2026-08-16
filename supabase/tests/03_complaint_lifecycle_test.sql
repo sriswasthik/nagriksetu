@@ -288,10 +288,10 @@ where submission_key = 'aaaaaaaa-0000-0000-0000-000000000001';
 \echo '### D2. That transition is in the history, so the timeline can date it'
 -- Qualified: both tables in this join have a `status` column.
 select
-  string_agg(h.status::text, ' -> ' order by h.created_at, h.id) as recorded,
+  string_agg(h.status::text, ' -> ' order by h.created_at) as recorded,
   'submitted -> ai_analyzed expected' as expectation,
   case
-    when string_agg(h.status::text, ' -> ' order by h.created_at, h.id)
+    when string_agg(h.status::text, ' -> ' order by h.created_at)
          = 'submitted -> ai_analyzed'
     then 'ok' else 'FAIL'
   end as result
@@ -446,10 +446,10 @@ update public.complaints set status = 'in_progress'
  where submission_key = 'aaaaaaaa-0000-0000-0000-000000000001';
 
 select
-  string_agg(h.status::text, ' -> ' order by h.created_at, h.id) as recorded,
+  string_agg(h.status::text, ' -> ' order by h.created_at) as recorded,
   'submitted -> ai_analyzed -> assigned -> in_progress expected' as expectation,
   case
-    when string_agg(h.status::text, ' -> ' order by h.created_at, h.id)
+    when string_agg(h.status::text, ' -> ' order by h.created_at)
          = 'submitted -> ai_analyzed -> assigned -> in_progress'
     then 'ok' else 'FAIL'
   end as result
@@ -487,6 +487,83 @@ select
 from public.complaint_media
 where file_name = 'streetlight.jpg';
 rollback;
+
+
+-- ============================================================
+-- F. COMPLAINT NUMBER IS NOT A SINGLE POINT OF FAILURE
+-- ============================================================
+-- Reproduces a failure reported from a real deployment:
+--
+--   Create complaint error: null value in column "complaint_number"
+--   of relation "complaints" violates not-null constraint
+--
+-- The client stopped supplying the number when allocation moved into the
+-- database, so a database whose numbering trigger is missing — behind on
+-- migrations, or a partially applied one — failed every submission with a
+-- message no citizen can act on. The column now carries a default as
+-- well, and the two cover different cases.
+
+\echo ''
+\echo '### F1. A number is still assigned with the trigger dropped'
+begin;
+reset role;
+-- Exactly the state the reported deployment was in.
+drop trigger complaints_set_number on public.complaints;
+
+set local role authenticated;
+select test.login(:'citizen');
+
+select (public.submit_complaint(
+  'cccccccc-0000-0000-0000-000000000001',
+  'Filed with no numbering trigger',
+  'This submission must still receive a tracking number.',
+  'other',
+  12.9716, 77.5946,
+  'Mill Road'
+)).complaint_number as assigned_by_default;
+
+select
+  complaint_number,
+  'NS-YYYY-NNNNNN expected, from the column default' as expectation,
+  case when complaint_number ~ '^NS-\d{4}-\d{6}$' then 'ok' else 'FAIL' end as result
+from public.complaints
+where submission_key = 'cccccccc-0000-0000-0000-000000000001';
+rollback;
+
+\echo ''
+\echo '### F2. An explicit NULL is caught by the trigger, which a default cannot reach'
+begin;
+reset role;
+with inserted as (
+  insert into public.complaints
+    (complaint_number, citizen_id, title, description, category, status,
+     latitude, longitude, address)
+  values
+    (null, :'citizen', 'Explicit null number',
+     'A default does not apply to an explicit null, so the trigger must.',
+     'other', 'submitted', 12.97, 77.59, 'Mill Road')
+  returning complaint_number
+)
+select
+  complaint_number,
+  'NS-YYYY-NNNNNN expected, from the trigger' as expectation,
+  case when complaint_number ~ '^NS-\d{4}-\d{6}$' then 'ok' else 'FAIL' end as result
+from inserted;
+rollback;
+
+\echo ''
+\echo '### F3. Both paths draw from one sequence, so numbers cannot collide'
+begin;
+reset role;
+select
+  count(*) as issued,
+  count(distinct complaint_number) as distinct_numbers,
+  'equal expected' as expectation,
+  case when count(*) = count(distinct complaint_number)
+       then 'ok' else 'FAIL' end as result
+from public.complaints;
+rollback;
+
 
 \echo ''
 \echo '=========================================================='

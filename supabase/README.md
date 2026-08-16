@@ -5,6 +5,28 @@ no state that only exists in the Supabase dashboard: buckets, storage
 policies, triggers, reference data and the analytics functions are all
 migrations, so a fresh project reproduces a working database exactly.
 
+## If something is failing, check the schema first
+
+```
+supabase/diagnose.sql
+```
+
+Paste it into the SQL editor. It lists every object the application
+expects and whether this database has it, plus any table with row-level
+security enabled and no policy — a combination that denies every request
+including reads.
+
+This exists because a deployment failed every submission with
+
+```
+null value in column "complaint_number" of relation "complaints"
+violates not-null constraint
+```
+
+which is what a missing numbering trigger looks like from the browser,
+and nothing in the app could say so. Anything marked `MISSING` means the
+migrations below have not all been applied.
+
 ## Applying the migrations
 
 With the Supabase CLI, against a linked project:
@@ -59,6 +81,7 @@ Appointing an officer or a supervisor is the same call with `'officer'` or
 | `20260814120600_verification_column_authority` | Stops a citizen forging the supervisor's verdict |
 | `20260814120700_complaint_and_work_order_column_authority` | Column authority on complaints and work orders, plus the triage write path |
 | `20260814120800_complaint_lifecycle` | Status history, idempotent submission, and triage advancing the status |
+| `20260814120900_complaint_number_default` | A column default for the complaint number, and wall-clock ordering for history |
 
 Each file opens with a comment explaining what was wrong and why the fix
 is shaped the way it is. Those comments are the reference; this table is

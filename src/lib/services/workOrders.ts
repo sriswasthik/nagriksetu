@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
+import { NotSignedInError } from "@/lib/services/errors";
 import type {
   WorkOrder,
   WorkOrderStatus,
@@ -132,10 +133,20 @@ async function getAuthenticatedUserId(): Promise<string> {
     error,
   } = await supabase.auth.getUser();
 
-  if (error) throw error;
+  /*
+   * A missing session arrives as an AuthSessionMissingError in `error`,
+   * not as a null user. Rethrowing it surfaced the provider's internal
+   * name to the officer; both cases are the same thing and get the same
+   * readable message.
+   */
+  if (error && error.name !== "AuthSessionMissingError") {
+    console.error("Session lookup failed:", error.message);
+  }
 
   if (!user) {
-    throw new Error("You must be signed in to update a work order.");
+    throw new NotSignedInError(
+      "You need to be signed in to update a work order."
+    );
   }
 
   return user.id;
