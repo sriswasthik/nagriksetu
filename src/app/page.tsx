@@ -80,11 +80,25 @@ export default function LandingPage() {
           <div className="flex h-16 items-center justify-between">
             <Logo size="md" />
 
-            <nav aria-label="Account" className="flex items-center gap-2 sm:gap-3">
-              <Button variant="ghost" asChild>
+            {/*
+              Tighter horizontal padding below `sm`.
+
+              At 320px — an iPhone SE, and still a real share of civic
+              traffic — the logo plus both buttons at their default px-5
+              pushed the document 34px wider than the viewport, so the
+              whole landing page scrolled sideways. Reducing the padding
+              keeps both actions rather than hiding one, which is the
+              alternative and a worse one for a page whose job is to get
+              somebody signed in.
+            */}
+            <nav
+              aria-label="Account"
+              className="flex shrink-0 items-center gap-1.5 sm:gap-3"
+            >
+              <Button variant="ghost" asChild className="px-2.5 sm:px-5">
                 <Link href="/auth/login">Log in</Link>
               </Button>
-              <Button asChild>
+              <Button asChild className="px-3 sm:px-5">
                 <Link href="/auth/register">Get started</Link>
               </Button>
             </nav>

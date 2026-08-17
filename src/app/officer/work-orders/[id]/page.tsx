@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatDateTime } from "@/lib/utils";
+import { toCoordinates } from "@/lib/geo/coordinates";
 import { workOrderService } from "@/lib/services/workOrders";
 import { authService } from "@/lib/services/auth";
 import {
@@ -319,6 +320,16 @@ export default function WorkOrderDetailView() {
    * control belonged.
    */
   const isAssignee = Boolean(viewerId) && order.officerId === viewerId;
+
+  /*
+   * The site, if it has one. An officer navigates from this, so a
+   * confident link to 0,0 is worse than no link — it sends them to the
+   * wrong ocean rather than telling them the location was never recorded.
+   */
+  const sitePoint = toCoordinates(
+    order.location.latitude,
+    order.location.longitude
+  );
 
   const isFinished = order.status === "resolved";
   const awaitingSignOff = [
@@ -888,18 +899,26 @@ export default function WorkOrderDetailView() {
               />
             </div>
 
-            <div className="p-3">
-              <Button asChild variant="outline" className="w-full">
-                <a
-                  href={`https://www.openstreetmap.org/?mlat=${order.location.latitude}&mlon=${order.location.longitude}#map=18/${order.location.latitude}/${order.location.longitude}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <ExternalLink className="mr-1 h-4 w-4" aria-hidden="true" />
-                  Open in maps
-                </a>
-              </Button>
-            </div>
+            {/*
+              Offered only when there is somewhere to open.
+              order.location.latitude used to be coalesced from null to 0,
+              so this link was always rendered and, for an unlocated work
+              order, sent the officer to the Gulf of Guinea.
+            */}
+            {sitePoint && (
+              <div className="p-3">
+                <Button asChild variant="outline" className="w-full">
+                  <a
+                    href={`https://www.openstreetmap.org/?mlat=${sitePoint.latitude}&mlon=${sitePoint.longitude}#map=18/${sitePoint.latitude}/${sitePoint.longitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ExternalLink className="mr-1 h-4 w-4" aria-hidden="true" />
+                    Open in maps
+                  </a>
+                </Button>
+              </div>
+            )}
           </section>
 
           {/*

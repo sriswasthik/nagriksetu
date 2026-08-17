@@ -101,9 +101,10 @@ security model.
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
-| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, the work-order state machine, analytics null handling, and notification routing (`node --test`, no test framework dependency) |
+| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, the work-order state machine, analytics null handling, notification routing, and coordinate validation (`node --test`, no test framework dependency) |
 | `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
 | `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
+| `node scripts/verify-viewports.mjs` | Load the app at 320/375/768/1440 and assert no horizontal overflow and no hydration mismatch (drives the pre-installed Chromium over CDP; no dependency) |
 | `./scripts/verify-bootstrap.sh` | Prove `supabase/bootstrap.sql` upgrades an original-schema database and is safe to re-run |
 | `./scripts/generate-bootstrap.sh` | Rebuild `supabase/bootstrap.sql` after adding a migration |
 
@@ -220,6 +221,108 @@ Parsing and validation are the parts most worth testing, so they are:
 `npm test` covers fenced replies, prose padding, trailing commas,
 percentage confidences, out-of-range values, unknown enum members,
 arrays and empty bodies, plus each fallback path.
+
+## Maps and geolocation
+
+### One definition of "is this a place"
+
+`src/lib/geo/coordinates.ts` is the single validator, used by every map and
+mirrored by CHECK constraints on `public.complaints`. It replaced four
+different answers, three of them wrong:
+
+| Was | Problem |
+|---|---|
+| `lat !== null && lng !== null` | passes `NaN`, passes `999` |
+| `typeof lat === "number"` | passes `NaN` — `typeof NaN` is `"number"` |
+| nothing at all | `StaticLocationMap` rendered whatever it was handed |
+| `complaint?.latitude ?? 0` | **invents Null Island** |
+
+The last one did real damage. An unlocated work order became a well-typed
+`0,0` that every downstream check accepted, and `fitBounds` over a real
+city plus the Gulf of Guinea frames a hemisphere — so **one row without
+coordinates collapsed every genuine marker on the authority map to a
+pixel.** Work-order coordinates are now `number | null`, and a map with
+nothing to draw says "No location recorded" instead.
+
+`0,0` is rejected rather than plotted: a device with no fix, an empty
+string parsed, and a zeroed struct all produce it, so it is
+indistinguishable from a failed read. Zero on *one* axis is fine — the
+equator and the prime meridian are real places.
+
+Longitudes beyond ±180 are **wrapped, not rejected**. Leaflet reports the
+longitude of the world copy that was clicked, so panning across the date
+line and tapping gives ~+540 for a place at ~-180 — the same spot, which
+the database would nonetheless refuse at the end of the form. Wrapping
+happens where the pin enters, so what the citizen placed is what gets
+stored.
+
+### Geolocation failures are typed
+
+`GeolocationError` carries a `failure` kind and a `retryable` flag, so the
+UI can respond to the actual problem rather than matching on prose:
+
+| Failure | What the picker does |
+|---|---|
+| `denied` | Withdraws the button — the browser will not prompt again — and points at the map |
+| `timeout` / `unavailable` | Offers a retry |
+| `unsupported` | Map only |
+| `invalid-fix` | The device reported `0,0` or worse; map only |
+
+A fix coarser than 100 m is accepted and **flagged**: "accurate to about
+480 m — check the pin". Presenting a city-block-sized guess as a captured
+location is how a crew is sent to the wrong street.
+
+### Reverse geocoding: what it costs and what limits it
+
+BigDataCloud's keyless endpoint, which was already present — no new
+provider. It sends a citizen's location to somebody who is not the
+municipality, and that buys an address an officer can navigate by.
+Three things hold the cost to what the feature needs:
+
+- **Coarsened.** Rounded to 4 decimal places (~11 m) before leaving the
+  browser — enough to name a neighbourhood, not a doorway. Full precision
+  stays local and is what gets stored.
+- **Bounded.** One request per detection, 6s deadline, `AbortController`,
+  no retry loop. Previously it had *no* timeout at all, so a third party
+  that accepted the connection and never answered held the whole flow open
+  with the button spinning.
+- **Optional.** A failure returns null, not an error. The report proceeds
+  with a coordinate readout as its address and `isNamedPlace: false`, so
+  the UI asks for a landmark rather than presenting two numbers as a
+  street.
+
+`referrerPolicy: "no-referrer"`, so the provider is not told which
+deployment asked. No API key, so nothing is attributed to an account.
+
+### Maps
+
+- **Tile failure is stated.** Nothing listened for `tileerror`, so an
+  offline device or a blocked tile host produced markers floating in flat
+  grey — indistinguishable from a wrong pin. `BaseTileLayer` reports it
+  after a few failures (one 404 mid-pan is routine) and the fallback shows
+  the coordinates, which is what somebody navigating to the site needs.
+- **Reduced motion is respected.** `flyTo` animates a zoom-and-pan arc,
+  which is exactly the large-area motion `prefers-reduced-motion` exists
+  to suppress. Every `flyTo`, `setView` and `fitBounds` now checks it and
+  arrives at the same place instantly.
+- **No hydration risk.** Leaflet touches `window` at import time, so every
+  map is behind `next/dynamic` with `ssr: false`. Asserted rather than
+  assumed — see the viewport script.
+- **`worldCopyJump={false}`** everywhere, so the map does not repeat
+  sideways and an antimeridian longitude is rare rather than merely
+  handled.
+
+### Data scope
+
+The citizen map shows **only the citizen's own reports** — RLS confines
+`complaints` to the reporter, and no area-scoped public feed exists, so a
+city-wide neighbourhood view is not something the frontend can honestly
+render. It is scoped and labelled rather than filled with plausible
+strangers' reports. The government hotspot map is the city-wide view, and
+says how many work orders have no coordinates instead of quietly dropping
+them.
+
+Details in [supabase/README.md](supabase/README.md#coordinates).
 
 ## Notifications
 
