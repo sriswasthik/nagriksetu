@@ -100,6 +100,27 @@ from (
       where tgname = 'complaints_enforce_authority' and not tgisinternal
     ),
     'Column authority. Absent = a citizen can close their own complaint'
+  union all
+  select 'trigger', 'work_orders_enforce_transition',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_orders_enforce_transition' and not tgisinternal
+    ),
+    'The work-order state machine. Absent = an officer can resolve their own work'
+  union all
+  select 'trigger', 'work_orders_record_transition',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_orders_record_transition' and not tgisinternal
+    ),
+    'Writes the audit trail. Absent = transitions happen with no record of who'
+  union all
+  select 'trigger', 'work_orders_sync_complaint',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_orders_sync_complaint' and not tgisinternal
+    ),
+    'Absent = the citizen''s tracking view never follows the officer''s work'
 
   -- ---------- functions ----------
   union all
@@ -118,6 +139,14 @@ from (
   select 'function', 'analytics_summary',
     exists (select 1 from pg_proc where proname = 'analytics_summary'),
     'Authority dashboard figures'
+  union all
+  select 'function', 'advance_work_order',
+    exists (select 1 from pg_proc where proname = 'advance_work_order'),
+    'How an officer accepts, starts and completes work'
+  union all
+  select 'function', 'assignable_officers',
+    exists (select 1 from pg_proc where proname = 'assignable_officers'),
+    'Absent = nothing can be assigned to anybody'
 
   -- ---------- storage ----------
   union all

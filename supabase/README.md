@@ -110,6 +110,7 @@ Appointing an officer or a supervisor is the same call with `'officer'` or
 | `20260814120700_complaint_and_work_order_column_authority` | Column authority on complaints and work orders, plus the triage write path |
 | `20260814120800_complaint_lifecycle` | Status history, idempotent submission, and triage advancing the status |
 | `20260814120900_complaint_number_default` | A column default for the complaint number, and wall-clock ordering for history |
+| `20260816120000_work_order_lifecycle` | The work-order state machine, the audit trail as a trigger, the complaint-status sync as a trigger, `advance_work_order()` and `assignable_officers()` |
 
 Each file opens with a comment explaining what was wrong and why the fix
 is shaped the way it is. Those comments are the reference; this table is
@@ -162,6 +163,7 @@ Triggers close that gap:
 | --- | --- |
 | `complaints_enforce_authority` | Citizens cannot set status (except reopening), priority, SLA, department, ward or the `ai_*` fields. Staff cannot rewrite the citizen's title or description. Nobody changes `citizen_id`, `complaint_number` or `created_at`. |
 | `work_orders_enforce_authority` | `complaint_id` is fixed; only oversight reassigns an officer |
+| `work_orders_enforce_transition` | The state machine, plus: proof must exist to be submitted, an unassigned work order has no lifecycle, and lifecycle timestamps are server-stamped rather than caller-supplied |
 | `verifications_enforce_authority` | Supervisor columns are supervisor-only, citizen columns citizen-only, `verified_at` derived |
 
 The triage columns have exactly one caller-facing entry point:
@@ -240,6 +242,88 @@ mid-run cannot produce a second classification.
 Where those values come from, and how a model failure is recorded rather
 than raised, is in [the root README](../README.md#ai-complaint-triage).
 
+## The work-order lifecycle
+
+Once a complaint is assigned, the work order is the record of the repair.
+`work_orders.status` is an enum, which means Postgres would accept any of
+its eight values in place of any other — so the state machine is a
+trigger, and it is split by authority:
+
+| Who | May move it |
+| --- | --- |
+| The assigned officer | `assigned → accepted → in_progress → proof_submitted`, and `reopened → in_progress` for rework |
+| Oversight | `proof_submitted → supervisor_review → citizen_confirmation → resolved`, `→ reopened` from any of those, `resolved → reopened`, and `→ assigned` from anything unresolved (reassignment) |
+
+**The officer's terminal state is `proof_submitted`, not `resolved`.** An
+officer declaring their own work finished is what the verification stage
+exists to prevent. Before this, an officer could PATCH straight from
+`assigned` to `resolved` — closing a job nobody had visited.
+
+Four more things the trigger enforces, each of which was previously only
+a property of the UI:
+
+- **Proof must exist to be submitted.** `proof_submitted` is what a
+  supervisor signs off from. The page required a photograph; the database
+  required nothing, so a hand-written PATCH produced a work order
+  awaiting verification with nothing to verify.
+- **An unassigned work order has no lifecycle.** RLS already stops an
+  officer (`officer_id = auth.uid()` cannot hold against null), but
+  oversight passed it, and accepting on nobody's behalf records that
+  nobody accepted it.
+- **Timestamps are server-stamped.** `accepted_at`, `started_at` and
+  `completed_at` came from the browser. They are SLA evidence, so a
+  caller that could set them could backdate a repair. An update carrying
+  them is now refused outright rather than silently overwritten — a
+  client that thinks it is recording history should not look like it
+  succeeded.
+- **Reassignment clears the previous officer's stamps.** They describe
+  work the new assignee has not done. The audit trail keeps the history.
+
+### The audit trail is not optional
+
+`work_order_updates` was written by the application, in a separate
+statement, deliberately best-effort — "if the audit insert fails the
+transition itself still stands". So the record of who changed what could
+be missing exactly when something went wrong, and a caller who simply
+never issued the second statement left no trace at all.
+
+It is now `work_orders_record_transition`: same transaction as the
+transition, actor from `auth.uid()`, unreachable from any client. The
+table has a SELECT policy and no INSERT, UPDATE or DELETE policy for
+anyone, so its rows come only from the trigger and nobody can edit them
+afterwards.
+
+### The citizen's view cannot lag
+
+The complaint's status was mirrored by a third application statement,
+also best-effort. If it failed the officer saw `in_progress` and the
+citizen tracking that report still saw `assigned`, with nothing to
+reconcile them and no error either would ever be shown. And creating a
+work order propagated nothing at all, so assignment left the citizen
+looking at "Submitted" indefinitely.
+
+`work_orders_sync_complaint` fires on insert as well as update, in the
+same transaction. It is `SECURITY DEFINER` because the officer has no
+policy permitting them to update that citizen's complaint and should not
+— this is the one derived write, and it writes one column.
+
+The officer's note travels with it, into
+`complaint_status_history.note`, which existed and had never been
+populated. A citizen's timeline could say "In Progress" but never why,
+even when the officer had written down exactly what they were doing.
+
+### advance_work_order()
+
+The caller-facing entry point, so a client sends an intent rather than a
+row patch, and so the note reaches the audit row the trigger writes.
+
+`SECURITY INVOKER`, deliberately: every check that matters is a policy or
+a trigger, and running as the caller means the function cannot become a
+way around them. An officer calling it about someone else's work order is
+refused by the same RLS that refuses their PATCH — with one message for
+"does not exist" and "not yours", since distinguishing them would confirm
+the existence of work orders the caller has no business knowing about.
+
 ## Testing
 
 ```bash
@@ -256,6 +340,7 @@ order, then runs each suite:
 | `01_rls_smoke_test.sql` | The full lifecycle as four users: file → assign → work → verify → confirm → resolve |
 | `02_auth_boundary_test.sql` | Who may read and write what: anonymous access, citizen confinement, officer confinement, authority limits, the triage path, role escalation |
 | `03_complaint_lifecycle_test.sql` | The citizen's own path: submission, idempotency, coordinate validation, triage, and the status history a timeline reads |
+| `04_officer_lifecycle_test.sql` | The officer's path: the state machine, proof gating, the audit trail's actors, the citizen's view following along, and sign-off |
 
 Needs PostgreSQL server binaries; no Docker and no Supabase project.
 
@@ -268,8 +353,10 @@ another citizen's complaint, close their own complaint, rewrite its
 priority or SLA, transfer it to someone else, promote themselves, forge a
 supervisor's verdict, re-run their own triage, upload into another user's
 folder, or delete a recorded proof — or if an officer can take another
-officer's work order, repoint it at a different complaint, or rewrite the
-citizen's account of the issue.
+officer's work order, repoint it at a different complaint, rewrite the
+citizen's account of the issue, skip a lifecycle stage, resolve their own
+work, submit proof with no photograph, backdate a completion, advance an
+unassigned work order, or edit the audit trail afterwards.
 
 Route protection is verified separately, since it is not a database
 concern:
