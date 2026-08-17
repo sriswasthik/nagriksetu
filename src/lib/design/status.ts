@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import type { ComplaintStatus, PriorityLevel } from "@/types/complaint";
+import type { NotificationType } from "@/types/notification";
 
 /**
  * ============================================================
@@ -334,6 +335,34 @@ export function getPriorityMeta(level: PriorityLevel): PriorityMeta {
 export function getToneClasses(tone: StatusTone) {
   return TONE_CLASSES[tone] ?? TONE_CLASSES.pending;
 }
+
+/**
+ * The tone for each notification type.
+ *
+ * Mapped onto the same StatusTone vocabulary the timelines and badges
+ * use, so a "Resolved" notification is the same green as the Resolved
+ * stage it refers to. The alternative — a semantic palette local to the
+ * tray — would drift from the rest of the product the first time either
+ * changed.
+ */
+export const NOTIFICATION_TONE: Record<NotificationType, StatusTone> = {
+  complaint_submitted: "pending",
+  complaint_triaged: "triage",
+  complaint_assigned: "assigned",
+  work_accepted: "assigned",
+  work_started: "active",
+  proof_submitted: "review",
+  complaint_under_review: "review",
+  // The two that need the citizen to act.
+  confirmation_requested: "review",
+  complaint_resolved: "resolved",
+  complaint_reopened: "reopened",
+  complaint_rejected: "rejected",
+  // The two that need the officer to act.
+  work_order_assigned: "assigned",
+  work_order_reopened: "reopened",
+  status_changed: "pending",
+};
 
 /** Human label for a raw category enum value, e.g. water_leakage → Water Leakage. */
 export function formatCategory(category: string | null | undefined): string {
