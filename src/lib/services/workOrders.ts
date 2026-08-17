@@ -134,6 +134,17 @@ const SIGNED_URL_TTL_SECONDS = 3600;
 
 const MAX_PROOF_SIZE = 10 * 1024 * 1024;
 
+/*
+ * Row caps for the list query.
+ *
+ * A work-order row carries its complaint, department and officer through
+ * the join, so these are not cheap rows. 200 is more than fits on any
+ * screen and enough for the queue's client-side search to feel complete;
+ * the hard ceiling stops a caller asking for the city.
+ */
+const DEFAULT_WORK_ORDER_ROWS = 200;
+const MAX_WORK_ORDER_ROWS = 500;
+
 /**
  * The id of the signed-in user, as Postgres sees it in auth.uid().
  *
@@ -329,17 +340,39 @@ export const workOrderService = {
     return this.getWorkOrders({ ...filters, officerId });
   },
 
+  /**
+   * Work orders the caller may see, newest first, capped.
+   *
+   * The cap is not optional. This was an unbounded select joining four
+   * tables, and the authority queue and the hotspot map both called it
+   * with no filters at all — so every work order in the city, with its
+   * complaint, department and officer, was downloaded to the browser to
+   * be counted and filtered there. That is fine at demo scale and is the
+   * first thing to fall over at city scale.
+   *
+   * Counts do not come from the returned array any more. The screens that
+   * need totals read them from the analytics aggregates, which count in
+   * Postgres — so a capped page of rows no longer means capped numbers.
+   */
   async getWorkOrders(filters?: {
     status?: WorkOrderStatus;
     priority?: string;
     officerId?: string;
+    /** Rows to return. Clamped to MAX_WORK_ORDER_ROWS. */
+    limit?: number;
   }): Promise<WorkOrder[]> {
     const supabase = createClient();
+
+    const limit = Math.min(
+      Math.max(filters?.limit ?? DEFAULT_WORK_ORDER_ROWS, 1),
+      MAX_WORK_ORDER_ROWS
+    );
 
     let query = supabase
       .from("work_orders")
       .select(WORK_ORDER_SELECT)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
     if (filters?.status) {
       query = query.eq("status", filters.status);

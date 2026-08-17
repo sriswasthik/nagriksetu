@@ -31,8 +31,10 @@ import {
 } from "@/components/ui/select";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
+import { analyticsService } from "@/lib/services/analytics";
 import { referenceService, type Department } from "@/lib/services/reference";
 import type { WorkOrder } from "@/types/workOrder";
+import type { SLAData, WorkOrderCounts } from "@/types/analytics";
 
 /**
  * ============================================================
@@ -65,6 +67,14 @@ type SortKey = "urgency" | "newest" | "sla";
 export default function GovernmentIssueQueue() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  /*
+   * Totals come from Postgres aggregates, not from the rows below. The
+   * row query is capped, so counting the array would report "the urgent
+   * ones among the most recent 200" under a label that says "urgent
+   * open" — a wrong number that looks right.
+   */
+  const [totals, setTotals] = useState<WorkOrderCounts | null>(null);
+  const [sla, setSla] = useState<SLAData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -80,13 +90,19 @@ export default function GovernmentIssueQueue() {
       // The department filter compares against work_orders.department_id,
       // so its options have to be the real uuid-keyed rows. A failed
       // lookup only costs the filter, so it must not fail the queue.
-      const [orders, departmentRows] = await Promise.all([
+      const [orders, departmentRows, counted, slaData] = await Promise.all([
         workOrderService.getWorkOrders(),
         referenceService.getDepartments().catch(() => []),
+        // Aggregates are the source for the headline figures. A failure
+        // costs the four stat cards, not the queue itself.
+        analyticsService.getWorkOrderCounts().catch(() => null),
+        analyticsService.getSLAData().catch(() => null),
       ]);
 
       setWorkOrders(orders);
       setDepartments(departmentRows);
+      setTotals(counted);
+      setSla(slaData);
     } catch (loadError) {
       console.error("Failed to load issue queue", loadError);
       setError("We couldn't load the issue queue. Please try again.");
@@ -153,11 +169,11 @@ export default function GovernmentIssueQueue() {
     });
   }, [workOrders, filter, department, search, sort]);
 
-  const breaching = workOrders.filter(
-    (wo) =>
-      wo.slaHoursRemaining <= 0 &&
-      wo.status !== "resolved"
-  ).length;
+  /*
+   * Whether the row query hit its cap. Said out loud below rather than
+   * left for a reader to notice that the list stops.
+   */
+  const isCapped = totals !== null && workOrders.length < totals.total;
 
   const hasFilters = search.trim() !== "" || department !== "all" || filter !== "urgent";
 
@@ -189,30 +205,40 @@ export default function GovernmentIssueQueue() {
       {/* ---------- Queue posture ---------- */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Urgent open"
-          value={counts.urgent}
-          hint="Critical or high priority"
-          tone="danger"
+          label="Unassigned"
+          value={totals?.unassigned ?? "—"}
+          hint="No officer yet"
+          tone={totals && totals.unassigned > 0 ? "danger" : "default"}
         />
         <StatCard
+          /* Counted in Postgres across every complaint, not across the
+             capped page of rows below. */
           label="SLA breached"
-          value={breaching}
+          value={sla?.breached ?? "—"}
           hint="Past their target deadline"
-          tone={breaching > 0 ? "danger" : "default"}
+          tone={sla && sla.breached > 0 ? "danger" : "default"}
         />
         <StatCard
-          label="In flight"
-          value={counts.active}
-          hint="Assigned or under way"
-          tone="warning"
+          label={sla ? `Due within ${sla.riskWindowHours}h` : "Due soon"}
+          value={sla?.atRisk ?? "—"}
+          hint="Deadline approaching"
+          tone={sla && sla.atRisk > 0 ? "warning" : "default"}
         />
         <StatCard
           label="Awaiting verification"
-          value={counts.review}
+          value={totals?.awaitingVerification ?? "—"}
           hint="Proof submitted, needs sign-off"
           tone="brand"
         />
       </div>
+
+      {/* A dash above means the aggregate could not be read, which is not
+          the same as zero — so it says so instead of showing a figure. */}
+      {totals === null && sla === null && !error && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Queue totals are unavailable. The list below is still live.
+        </p>
+      )}
 
       {/* ---------- Controls ---------- */}
       <div className="mt-6 space-y-4">
@@ -300,6 +326,19 @@ export default function GovernmentIssueQueue() {
         <span>
           {rows.length} {rows.length === 1 ? "report" : "reports"}
         </span>
+
+        {/*
+          The row query is capped, so the list can be a subset of what the
+          totals above count. Said plainly: a queue that silently stops is
+          how a reader concludes there is nothing further to triage.
+        */}
+        {isCapped && (
+          <span className="text-xs">
+            · showing the {workOrders.length} most recent of{" "}
+            {totals?.total} — narrow the filters to reach older ones
+          </span>
+        )}
+
         {hasFilters && (
           <Button
             variant="ghost"

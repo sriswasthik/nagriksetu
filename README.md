@@ -101,7 +101,7 @@ security model.
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
-| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, and the work-order state machine (`node --test`, no test framework dependency) |
+| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, the work-order state machine, and analytics null handling (`node --test`, no test framework dependency) |
 | `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
 | `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
 | `./scripts/verify-bootstrap.sh` | Prove `supabase/bootstrap.sql` upgrades an original-schema database and is safe to re-run |
@@ -221,6 +221,70 @@ Parsing and validation are the parts most worth testing, so they are:
 percentage confidences, out-of-range values, unknown enum members,
 arrays and empty bodies, plus each fallback path.
 
+## Authority analytics
+
+Every figure on a government screen is aggregated in Postgres and read
+through `analyticsService` — no page holds a query, and nothing is derived
+in a render path that the database can compute.
+
+What is worth knowing is what the dashboards used to show.
+
+**Two figures were invented.** A ward with no complaints reported **100%
+SLA compliance** and a health score of `good`, because the database
+coalesced its missing figure to 100 — so the wards a municipality knew
+least about presented as its best performers, and the "wards needing
+attention" list was sorted against a fiction. A department with none
+reported **0%**, which renders as a full red bar. Both are now `null`, the
+type is `number | null`, and the screens say "No data". Zero is a
+measurement; the absence of one is not, and they must not look alike.
+
+**Resolution time was an approximation shown as a measurement.** It
+measured from `complaints.updated_at` — "last touched" — so any later edit
+to a resolved complaint moved it. It now comes from the moment
+`complaint_status_history` recorded the resolution, complaints with no such
+record are excluded rather than guessed at, and every average carries the
+sample it was computed from ("18h across 12 resolved reports").
+
+**"At risk" meant "not yet late".** Every open complaint with a future
+deadline was flagged, so a report filed an hour ago with six days of
+headroom counted. Risk is now a deadline inside a window; what the old
+figure counted is reported separately as "on track".
+
+**The SLA bar's buckets did not sum to the whole.** A complaint resolved
+*after* its deadline belonged to none of them, so the bar under-filled and
+every percentage beside it used the wrong denominator. The five buckets now
+partition every complaint.
+
+| Metric | Source |
+|---|---|
+| Total / new / open / critical complaints | `analytics_summary()` |
+| Resolution rate, average resolution time, SLA compliance | `analytics_summary()`, measured from recorded history |
+| Complaints by status | `analytics_status_distribution()` |
+| Complaints by category | `analytics_category_distribution()` |
+| Complaints by department | `analytics_department_performance()` |
+| Complaints by ward | `analytics_ward_health()` |
+| Priority distribution | `analytics_priority_distribution()` |
+| SLA posture and risk items | `analytics_sla_breakdown()`, `analytics_sla_risk_items()` |
+| Geographic concentration | `analytics_hotspots()` |
+| Active / completed work orders | `analytics_work_orders()` |
+
+**Scoped by RLS, not by a role check.** The functions are `SECURITY
+INVOKER`, so the same `analytics_summary()` call returns the city to an
+administrator and only their own reports to a citizen — which is correct
+behaviour, not a leak. `EXECUTE` is revoked from `PUBLIC`, so an
+unauthenticated caller is refused rather than relying on RLS to hand it
+zeros. A test reads `pg_proc.prosecdef` and fails if any of them ever
+becomes `SECURITY DEFINER`.
+
+**Bounded.** Every list function clamps its own row cap. The queries these
+replaced did not: the hotspot map and the authority queue each selected
+every work order in the city, with its complaint, department and officer
+joined, to count and filter in the browser. Rows are capped now and totals
+come from the aggregates, so a capped page does not mean a capped number.
+
+Details in
+[supabase/README.md](supabase/README.md#analytics).
+
 ## The officer work-order lifecycle
 
 A work order is the record of one repair, and its status is a state
@@ -300,8 +364,12 @@ The officer path — accept, start, photograph, submit, sign off — is
 complete and enforced at the database boundary. See
 [The officer work-order lifecycle](#the-officer-work-order-lifecycle).
 
+Authority dashboards read live aggregates with no invented figures; see
+[Authority analytics](#authority-analytics).
+
 Known functional gaps: complaints are not assigned to a ward (the `wards`
-table has no geometry to derive one from), nothing writes to the
+table has no geometry to derive one from), so ward health is measurable
+only once something sets `ward_id`; nothing writes to the
 `notifications` table yet — the in-app feed is derived from complaint
 state instead — a citizen cannot reject a repair themselves (a supervisor
 records that verdict on their behalf), and the authority queue lists
