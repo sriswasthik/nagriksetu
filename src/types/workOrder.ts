@@ -78,8 +78,17 @@ export interface WorkOrder {
   priorityScore: number;
   priorityLevel: PriorityLevel;
   location: {
-    latitude: number;
-    longitude: number;
+    /**
+     * Null when the complaint has no recorded coordinates.
+     *
+     * These were `number`, and the service coalesced a missing value to
+     * 0 to satisfy that — which is Null Island rather than "absent", so
+     * unlocated work orders were drawn in the Gulf of Guinea and dragged
+     * every map's bounds out to a hemisphere. Nullable here forces each
+     * consumer to decide what "no location" looks like.
+     */
+    latitude: number | null;
+    longitude: number | null;
     address: string;
     ward?: string;
   };
