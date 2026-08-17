@@ -111,6 +111,7 @@ Appointing an officer or a supervisor is the same call with `'officer'` or
 | `20260814120800_complaint_lifecycle` | Status history, idempotent submission, and triage advancing the status |
 | `20260814120900_complaint_number_default` | A column default for the complaint number, and wall-clock ordering for history |
 | `20260816120000_work_order_lifecycle` | The work-order state machine, the audit trail as a trigger, the complaint-status sync as a trigger, `advance_work_order()` and `assignable_officers()` |
+| `20260817120000_analytics_completeness` | Analytics measured rather than assumed: resolution time from recorded history, null where nothing was measured, exhaustive SLA buckets, and the status/priority/work-order/hotspot metrics that had no source |
 
 Each file opens with a comment explaining what was wrong and why the fix
 is shaped the way it is. Those comments are the reference; this table is
@@ -131,7 +132,16 @@ The `analytics_*` functions are the opposite — `SECURITY INVOKER`, so they
 run with the caller's privileges and RLS scopes the aggregate. The same
 `analytics_summary()` call returns the whole city to an administrator and
 only their own reports to a citizen. There is no way to use them to read
-rows the caller could not already select.
+rows the caller could not already select. That property is asserted, not
+assumed: `05_analytics_test.sql` reads `pg_proc.prosecdef` and fails if any
+of them ever becomes `SECURITY DEFINER`, because the scoping tests either
+side of it would then pass while returning the city to everybody.
+
+EXECUTE is also revoked from `PUBLIC`. Postgres grants it by default, so
+an anonymous caller could run all six of the original functions; it got
+zeros back, because RLS showed it no rows, which was the right answer for
+the wrong reason. A policy mistake would have surfaced as a silent leak to
+unauthenticated callers rather than as a denial.
 
 ## Storage
 
@@ -242,6 +252,90 @@ mid-run cannot produce a second classification.
 Where those values come from, and how a model failure is recorded rather
 than raised, is in [the root README](../README.md#ai-complaint-triage).
 
+## Analytics
+
+Every figure on an authority screen is aggregated in Postgres and read
+through one service. What this section is about is the figures that were
+*not* measured.
+
+### Two invented statistics
+
+`analytics_ward_health()` coalesced `sla_compliance` to **100** when a ward
+had no complaint carrying an SLA deadline, and scored it `good`. So a ward
+nobody had filed anything in presented as the city's best-performing one.
+`analytics_department_performance()` coalesced the same figure to **0**,
+which the UI renders as a full-width red bar.
+
+Neither number came from data. Both are now `null`, the type is
+`number | null`, and the screens render "No data". A ward with nothing to
+comply with has no compliance figure — that is the honest answer, and
+saying "0%" or "100%" instead is a claim a municipality will act on.
+
+Every average and percentage now travels with a `*SampleSize`, so a
+dashboard can say "18h across 12 resolved reports" rather than implying
+the figure covers everything. A figure exists if and only if its sample is
+non-zero, which is asserted directly.
+
+### Resolution time is measured, not approximated
+
+`avgResolutionHours` and `slaCompliance` both measured from
+`complaints.updated_at`, treating "last touched" as "resolved" — so a
+staff note, a triage correction or an AI re-run on a closed complaint
+moved its apparent resolution time.
+
+`complaint_resolution_times()` is now the single definition: the moment
+`complaint_status_history` recorded the status becoming `resolved`. A
+complaint with no such row is **excluded** rather than approximated, which
+is why the sample size matters.
+
+It also distinguishes *was resolved* from *is resolved*. A reopened
+complaint has a resolution event and is nonetheless open — the citizen
+rejected the repair — and counting both made it appear in two SLA buckets
+at once and contribute to the city's average resolution time as though the
+job were done. It is judged by current state; the history keeps the
+earlier attempt.
+
+### "At risk" now means at risk
+
+`analytics_sla_breakdown()` counted every open complaint whose deadline
+had not yet passed, so a report filed an hour ago with six days of
+headroom was flagged and the metric was unreadable. Risk is now a
+deadline inside a window (24h by default, a clamped parameter), and what
+the old figure counted is returned as `onTrack`.
+
+The buckets also did not sum to the whole. A complaint resolved *after*
+its deadline belonged to none of them — not `withinSLA`, and not open, so
+neither of the other two. The dashboard divides by their sum to size a
+stacked bar, so the bar under-filled and every percentage printed beside
+it used the wrong denominator. `withinSLA`, `breached`, `atRisk`,
+`onTrack` and `unmeasured` now partition every visible complaint.
+
+### The metrics that had no source
+
+| Function | Answers |
+| --- | --- |
+| `analytics_status_distribution()` | Complaints by status — every enum value, including the empty ones |
+| `analytics_priority_distribution()` | The open priority mix, in severity order so the chart's shape is stable |
+| `analytics_work_orders()` | Field workload: active, awaiting sign-off, completed, unassigned |
+| `analytics_hotspots()` | Geographic concentration, counted per ~550 m cell |
+| `analytics_sla_risk_items()` | Which complaints are at risk, bounded and ordered by urgency |
+
+`analytics_hotspots()` uses a coordinate grid rather than PostGIS, so it
+runs on a stock Supabase project. It ranks neighbourhoods; it is not a
+clustering algorithm and does not claim to be. Reports at `0,0` are
+excluded — a lost GPS fix is not a location, and counting it puts a
+permanent hotspot in the Gulf of Guinea.
+
+### Bounded by construction
+
+Every function that returns a list clamps its own row cap, so a caller
+cannot ask for the city. That matters because the queries these replaced
+did: the hotspot map and the authority queue both selected every work
+order with its complaint, department and officer joined, to count and
+filter them in the browser. Rows are now capped and totals come from the
+aggregates, so a capped page no longer means a capped number — and the
+queue says when it is showing a subset.
+
 ## The work-order lifecycle
 
 Once a complaint is assigned, the work order is the record of the repair.
@@ -341,6 +435,7 @@ order, then runs each suite:
 | `02_auth_boundary_test.sql` | Who may read and write what: anonymous access, citizen confinement, officer confinement, authority limits, the triage path, role escalation |
 | `03_complaint_lifecycle_test.sql` | The citizen's own path: submission, idempotency, coordinate validation, triage, and the status history a timeline reads |
 | `04_officer_lifecycle_test.sql` | The officer's path: the state machine, proof gating, the audit trail's actors, the citizen's view following along, and sign-off |
+| `05_analytics_test.sql` | That no figure is invented: nulls where nothing was measured, resolution time unmoved by later edits, buckets that sum to the whole, and aggregates scoped to the caller |
 
 Needs PostgreSQL server binaries; no Docker and no Supabase project.
 

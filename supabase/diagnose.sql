@@ -147,6 +147,18 @@ from (
   select 'function', 'assignable_officers',
     exists (select 1 from pg_proc where proname = 'assignable_officers'),
     'Absent = nothing can be assigned to anybody'
+  union all
+  select 'function', 'complaint_resolution_times',
+    exists (select 1 from pg_proc where proname = 'complaint_resolution_times'),
+    'The one definition of "resolved at". Absent = every analytics figure is unavailable'
+  union all
+  select 'function', 'analytics_status_distribution',
+    exists (select 1 from pg_proc where proname = 'analytics_status_distribution'),
+    'Complaints by status on the authority overview'
+  union all
+  select 'function', 'analytics_hotspots',
+    exists (select 1 from pg_proc where proname = 'analytics_hotspots'),
+    'Geographic concentration. Absent = the hotspot ranking is empty'
 
   -- ---------- storage ----------
   union all

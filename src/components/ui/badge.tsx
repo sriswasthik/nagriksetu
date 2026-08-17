@@ -37,6 +37,15 @@ export interface BadgeProps
   extends React.HTMLAttributes<HTMLDivElement>,
     VariantProps<typeof badgeVariants> {}
 
+/**
+ * The variant names, for callers that map their own states onto badges.
+ *
+ * Exported so a `Record<SomeState, BadgeVariant>` is checked against the
+ * real list: an exhaustive map is how a new state — a ward health score of
+ * `unknown`, say — fails to compile rather than rendering unstyled.
+ */
+export type BadgeVariant = NonNullable<BadgeProps["variant"]>;
+
 function Badge({ className, variant, ...props }: BadgeProps) {
   return (
     <div className={cn(badgeVariants({ variant }), className)} {...props} />

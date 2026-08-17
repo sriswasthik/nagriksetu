@@ -44,22 +44,60 @@ import {
   ChartTooltip,
   GRID_PROPS,
 } from "@/components/charts/chartTheme";
-import { analyticsService } from "@/lib/services/analytics";
+import {
+  NO_DATA,
+  analyticsService,
+  describeSample,
+  formatCount,
+  formatHours,
+  formatPercent,
+  shareOf,
+} from "@/lib/services/analytics";
+import type { BadgeVariant } from "@/components/ui/badge";
 import type {
   AnalyticsSummary,
   CategoryDistribution,
   DepartmentPerformance,
+  PriorityDistribution,
   SLAData,
+  StatusDistribution,
   TrendDataPoint,
   WardHealth,
+  WardHealthScore,
+  WorkOrderCounts,
 } from "@/types/analytics";
 
-const HEALTH_VARIANT = {
+/**
+ * Priority colours, matching PriorityBadge so one report reads the same
+ * on the queue and in this chart.
+ */
+const PRIORITY_COLOR: Record<string, string> = {
+  critical: "bg-red-500",
+  high: "bg-amber-500",
+  medium: "bg-blue-500",
+  low: "bg-neutral-400",
+};
+
+/*
+ * `unknown` is a ward with nothing measured. It used to be scored `good`
+ * on the strength of an invented 100% SLA compliance, so a ward nobody
+ * had filed anything in read as the city's best performer.
+ */
+const HEALTH_VARIANT: Record<WardHealthScore, BadgeVariant> = {
   good: "success",
   moderate: "warning",
   poor: "destructive",
   critical: "critical",
-} as const;
+  unknown: "muted",
+};
+
+const HEALTH_LABEL: Record<WardHealthScore, string> = {
+  good: "good",
+  moderate: "moderate",
+  poor: "poor",
+  critical: "critical",
+  unknown: "no data",
+};
 
 /**
  * ============================================================
@@ -72,8 +110,13 @@ const HEALTH_VARIANT = {
  *   2. Are we keeping pace with incoming reports?
  *   3. Where is the load concentrated?
  *
- * Every chart answers one of those. Figures come from local sample
- * data, which is labelled on the page.
+ * Every chart answers one of those.
+ *
+ * Every figure is aggregated in Postgres and read through
+ * analyticsService — no page-level queries, and nothing derived here that
+ * the database can compute. Where a metric has no sample it renders as
+ * "No data" rather than as zero, because a ward with no complaints has no
+ * compliance figure and saying "0%" would be inventing one.
  */
 export default function GovernmentDashboard() {
   const [isLoading, setIsLoading] = useState(true);
@@ -84,20 +127,27 @@ export default function GovernmentDashboard() {
   const [departments, setDepartments] = useState<DepartmentPerformance[]>([]);
   const [wards, setWards] = useState<WardHealth[]>([]);
   const [sla, setSla] = useState<SLAData | null>(null);
+  const [statuses, setStatuses] = useState<StatusDistribution[]>([]);
+  const [priorities, setPriorities] = useState<PriorityDistribution[]>([]);
+  const [workOrders, setWorkOrders] = useState<WorkOrderCounts | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
     try {
-      const [sum, trnd, cats, depts, wrds, slaData] = await Promise.all([
-        analyticsService.getSummary(),
-        analyticsService.getTrends(),
-        analyticsService.getCategoryDistribution(),
-        analyticsService.getDepartmentPerformance(),
-        analyticsService.getWardHealth(),
-        analyticsService.getSLAData(),
-      ]);
+      const [sum, trnd, cats, depts, wrds, slaData, stat, prio, wo] =
+        await Promise.all([
+          analyticsService.getSummary(),
+          analyticsService.getTrends(),
+          analyticsService.getCategoryDistribution(),
+          analyticsService.getDepartmentPerformance(),
+          analyticsService.getWardHealth(),
+          analyticsService.getSLAData(),
+          analyticsService.getStatusDistribution(),
+          analyticsService.getPriorityDistribution(),
+          analyticsService.getWorkOrderCounts(),
+        ]);
 
       setSummary(sum);
       setTrends(trnd);
@@ -105,6 +155,9 @@ export default function GovernmentDashboard() {
       setDepartments(depts);
       setWards(wrds);
       setSla(slaData);
+      setStatuses(stat);
+      setPriorities(prio);
+      setWorkOrders(wo);
     } catch (loadError) {
       console.error("Failed to load analytics", loadError);
       setError("We couldn't load the operations data. Please try again.");
@@ -144,14 +197,26 @@ export default function GovernmentDashboard() {
     );
   }
 
-  const resolutionRate = Math.round(
-    (summary.resolvedComplaints / summary.totalComplaints) * 100
-  );
+  /*
+   * The four buckets partition every complaint, so this is the real
+   * denominator. The previous three left out anything resolved late, so
+   * the stacked bar under-filled and the percentages beside it were
+   * computed against a total that excluded exactly the reports an
+   * administrator most wanted counted.
+   */
+  const slaTotal =
+    sla.withinSLA + sla.atRisk + sla.onTrack + sla.breached + sla.unmeasured;
 
-  const slaTotal = sla.withinSLA + sla.atRisk + sla.breached;
-
-  // Worst-performing wards first — that is where attention is needed.
-  const wardsByNeed = [...wards].sort((a, b) => a.slaCompliance - b.slaCompliance);
+  /*
+   * Worst-performing wards first — that is where attention is needed.
+   * Unmeasured wards sort last: they are not the worst performers, they
+   * are the ones there is nothing to say about yet.
+   */
+  const wardsByNeed = [...wards].sort((a, b) => {
+    if (a.slaCompliance === null) return b.slaCompliance === null ? 0 : 1;
+    if (b.slaCompliance === null) return -1;
+    return a.slaCompliance - b.slaCompliance;
+  });
 
   return (
     <div>
@@ -181,7 +246,13 @@ export default function GovernmentDashboard() {
         <StatCard
           label="SLA breached"
           value={sla.breached}
-          hint={`${((sla.breached / slaTotal) * 100).toFixed(1)}% of all reports`}
+          /* shareOf returns null rather than NaN on an empty database,
+             where this printed "NaN% of all reports". */
+          hint={
+            shareOf(sla.breached, slaTotal) === null
+              ? "No reports yet"
+              : `${shareOf(sla.breached, slaTotal)}% of all reports`
+          }
           icon={Clock3}
           tone="danger"
         />
@@ -193,10 +264,13 @@ export default function GovernmentDashboard() {
           tone="warning"
         />
         <StatCard
+          /* Computed in SQL. This was resolvedComplaints / totalComplaints
+             in the render path, which is NaN on an empty database — so a
+             fresh deployment showed "NaN%" as its resolution rate. */
           label="Resolution rate"
-          value={resolutionRate}
-          suffix="%"
-          hint={`${summary.resolvedComplaints.toLocaleString("en-IN")} resolved to date`}
+          value={summary.resolutionRate ?? NO_DATA}
+          suffix={summary.resolutionRate === null ? "" : "%"}
+          hint={`${formatCount(summary.resolvedComplaints)} resolved to date`}
           icon={CheckCircle2}
           tone="success"
         />
@@ -213,9 +287,11 @@ export default function GovernmentDashboard() {
           </h2>
           <p className="tabular text-sm text-muted-foreground">
             <span className="font-semibold text-foreground">
-              {summary.slaCompliance}%
+              {formatPercent(summary.slaCompliance)}
             </span>{" "}
-            within target · goal 90%
+            {summary.slaCompliance === null
+              ? "— no report has both a deadline and a recorded resolution yet"
+              : `within target ${describeSample(summary.slaSampleSize)} · goal 90%`}
           </p>
         </div>
 
@@ -224,27 +300,47 @@ export default function GovernmentDashboard() {
         <div
           className="mt-4 flex h-3 overflow-hidden rounded-full"
           role="img"
-          aria-label={`${sla.withinSLA} reports within SLA, ${sla.atRisk} at risk, ${sla.breached} breached`}
+          aria-label={`${sla.withinSLA} reports resolved within target, ${sla.onTrack} on track, ${sla.atRisk} at risk within ${sla.riskWindowHours} hours, ${sla.breached} breached, ${sla.unmeasured} not measurable`}
         >
           <span
             className="bg-emerald-500"
-            style={{ width: `${(sla.withinSLA / slaTotal) * 100}%` }}
+            style={{ width: `${shareOf(sla.withinSLA, slaTotal) ?? 0}%` }}
+          />
+          <span
+            className="bg-teal-400"
+            style={{ width: `${shareOf(sla.onTrack, slaTotal) ?? 0}%` }}
           />
           <span
             className="bg-amber-500"
-            style={{ width: `${(sla.atRisk / slaTotal) * 100}%` }}
+            style={{ width: `${shareOf(sla.atRisk, slaTotal) ?? 0}%` }}
           />
           <span
             className="bg-red-500"
-            style={{ width: `${(sla.breached / slaTotal) * 100}%` }}
+            style={{ width: `${shareOf(sla.breached, slaTotal) ?? 0}%` }}
+          />
+          {/* The remainder: no deadline recorded, rejected, or resolved
+              with no recorded resolution moment. Shown in grey rather
+              than dropped — dropping it is what left the bar short. */}
+          <span
+            className="bg-neutral-300"
+            style={{ width: `${shareOf(sla.unmeasured, slaTotal) ?? 0}%` }}
           />
         </div>
 
-        <dl className="mt-4 grid grid-cols-3 gap-4">
+        <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           {[
             { label: "Within target", value: sla.withinSLA, dot: "bg-emerald-500" },
-            { label: "At risk", value: sla.atRisk, dot: "bg-amber-500" },
+            { label: "On track", value: sla.onTrack, dot: "bg-teal-400" },
+            {
+              // Named with its window, because "at risk" without one is
+              // what the previous definition hid behind: it counted every
+              // unresolved report whose deadline had not yet passed.
+              label: `Due within ${sla.riskWindowHours}h`,
+              value: sla.atRisk,
+              dot: "bg-amber-500",
+            },
             { label: "Breached", value: sla.breached, dot: "bg-red-500" },
+            { label: "Not measurable", value: sla.unmeasured, dot: "bg-neutral-300" },
           ].map((item) => (
             <div key={item.label}>
               <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -262,7 +358,144 @@ export default function GovernmentDashboard() {
         </dl>
       </section>
 
-      {/* ================= 3. PACE & MIX ================= */}
+      {/* ================= 3. WHERE EVERYTHING STANDS ================= */}
+      {/*
+        Complaints by status and the open priority mix — two figures the
+        authority screens were built around and had no source for, so the
+        only breakdown available was open-versus-resolved.
+
+        Bar lists rather than charts: these are short, ordered, and read
+        as "how many of each", which a labelled bar answers more directly
+        than a pie a reader has to consult a legend for.
+      */}
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <section
+          aria-labelledby="status-heading"
+          className="rounded-lg border bg-card p-5"
+        >
+          <h2 id="status-heading" className="text-sm font-semibold text-foreground">
+            Reports by stage
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Every stage is listed, including the empty ones — a stage
+            missing from a list reads as one that does not exist.
+          </p>
+
+          <ul className="mt-4 space-y-2.5">
+            {statuses.map((entry) => (
+              <li key={entry.status}>
+                <div className="flex items-baseline justify-between gap-2 text-xs">
+                  <span className="truncate text-muted-foreground">
+                    {entry.label}
+                  </span>
+                  <span className="tabular shrink-0 font-semibold text-foreground">
+                    {formatCount(entry.count)}
+                    {entry.percentage !== null && (
+                      <span className="ml-1.5 font-normal text-muted-foreground">
+                        {entry.percentage}%
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div
+                  className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"
+                  role="presentation"
+                >
+                  <span
+                    className="block h-full rounded-full bg-primary"
+                    style={{ width: `${entry.percentage ?? 0}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section
+          aria-labelledby="priority-heading"
+          className="rounded-lg border bg-card p-5"
+        >
+          <h2
+            id="priority-heading"
+            className="text-sm font-semibold text-foreground"
+          >
+            Open work by priority
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Currently open, in severity order — so the shape of the list
+            does not change as the numbers do.
+          </p>
+
+          <ul className="mt-4 space-y-2.5">
+            {priorities.map((entry) => (
+              <li key={entry.priority}>
+                <div className="flex items-baseline justify-between gap-2 text-xs">
+                  <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                    <span
+                      aria-hidden="true"
+                      className={`h-2 w-2 shrink-0 rounded-full ${
+                        PRIORITY_COLOR[entry.priority] ?? "bg-neutral-400"
+                      }`}
+                    />
+                    <span className="truncate">{entry.label}</span>
+                  </span>
+                  <span className="tabular shrink-0 font-semibold text-foreground">
+                    {formatCount(entry.open)}
+                    <span className="ml-1.5 font-normal text-muted-foreground">
+                      of {formatCount(entry.total)} filed
+                    </span>
+                  </span>
+                </div>
+                <div
+                  className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"
+                  role="presentation"
+                >
+                  <span
+                    className={`block h-full rounded-full ${
+                      PRIORITY_COLOR[entry.priority] ?? "bg-neutral-400"
+                    }`}
+                    style={{ width: `${entry.percentageOfOpen ?? 0}%` }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          {/* ---------- Field workload ---------- */}
+          {workOrders && (
+            <div className="mt-5 border-t pt-4">
+              <h3 className="text-xs font-semibold text-foreground">
+                Field workload
+              </h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Work orders, which the dashboard did not previously count —
+                so what was actually dispatched was invisible to the
+                authority dispatching it.
+              </p>
+
+              <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {[
+                  { label: "Active", value: workOrders.active },
+                  { label: "Awaiting sign-off", value: workOrders.awaitingVerification },
+                  { label: "Completed", value: workOrders.completed },
+                  { label: "Unassigned", value: workOrders.unassigned },
+                ].map((item) => (
+                  <div key={item.label}>
+                    <dt className="text-xs text-muted-foreground">
+                      {item.label}
+                    </dt>
+                    <dd className="tabular mt-0.5 text-lg font-bold text-foreground">
+                      {formatCount(item.value)}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {/* ================= 4. PACE & MIX ================= */}
       <div className="mt-6 grid gap-6 lg:grid-cols-7">
         {/* Are we keeping up with intake? */}
         <section
@@ -393,7 +626,7 @@ export default function GovernmentDashboard() {
         </section>
       </div>
 
-      {/* ================= 4. DEPARTMENT LOAD ================= */}
+      {/* ================= 5. DEPARTMENT LOAD ================= */}
       <section
         aria-labelledby="dept-heading"
         className="mt-6 rounded-lg border bg-card p-5"
@@ -461,7 +694,7 @@ export default function GovernmentDashboard() {
         />
       </section>
 
-      {/* ================= 5. WARDS NEEDING ATTENTION ================= */}
+      {/* ================= 6. WARDS NEEDING ATTENTION ================= */}
       <section aria-labelledby="wards-heading" className="mt-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -472,7 +705,9 @@ export default function GovernmentDashboard() {
               Wards needing attention
             </h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Lowest service-level compliance first.
+              {wards.every((w) => w.healthScore === "unknown")
+                ? "No complaint has been assigned to a ward yet, so there is nothing to rank."
+                : "Lowest service-level compliance first. Wards with no data are listed last."}
             </p>
           </div>
 
@@ -495,7 +730,7 @@ export default function GovernmentDashboard() {
                   variant={HEALTH_VARIANT[ward.healthScore]}
                   className="capitalize"
                 >
-                  {ward.healthScore}
+                  {HEALTH_LABEL[ward.healthScore]}
                 </Badge>
               </div>
 
@@ -515,12 +750,16 @@ export default function GovernmentDashboard() {
                 <div className="flex justify-between">
                   <dt className="text-muted-foreground">SLA compliance</dt>
                   <dd className="tabular font-semibold text-foreground">
-                    {ward.slaCompliance}%
+                    {formatPercent(ward.slaCompliance)}
                   </dd>
                 </div>
               </dl>
 
-              <Progress value={ward.slaCompliance} className="mt-2.5 h-1.5" />
+              {/* No bar where there is no figure. A zero-width bar and a
+                  0% bar look identical, and one of them is a claim. */}
+              {ward.slaCompliance !== null && (
+                <Progress value={ward.slaCompliance} className="mt-2.5 h-1.5" />
+              )}
             </li>
           ))}
         </ul>
@@ -529,7 +768,10 @@ export default function GovernmentDashboard() {
       {/* Trend footnote keeps intake context near the charts. */}
       <p className="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
         <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
-        Average resolution time {summary.avgResolutionHours} hours ·{" "}
+        Average resolution time {formatHours(summary.avgResolutionHours)}
+        {summary.resolutionSampleSize > 0 &&
+          ` ${describeSample(summary.resolutionSampleSize, "resolved report")}`}
+        {" · "}
         {summary.resolvedToday} resolved today
       </p>
     </div>
