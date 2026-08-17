@@ -159,6 +159,28 @@ from (
   select 'function', 'analytics_hotspots',
     exists (select 1 from pg_proc where proname = 'analytics_hotspots'),
     'Geographic concentration. Absent = the hotspot ranking is empty'
+  union all
+  select 'function', 'emit_notification',
+    exists (select 1 from pg_proc where proname = 'emit_notification'),
+    'Absent = no lifecycle event ever notifies anybody'
+  union all
+  select 'function', 'unread_notification_count',
+    exists (select 1 from pg_proc where proname = 'unread_notification_count'),
+    'The notification badge'
+  union all
+  select 'trigger', 'complaint_status_notify',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'complaint_status_notify' and not tgisinternal
+    ),
+    'Absent = a citizen is never told their report progressed'
+  union all
+  select 'trigger', 'work_order_assignment_notify',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_order_assignment_notify' and not tgisinternal
+    ),
+    'Absent = an officer is never told a job is theirs'
 
   -- ---------- storage ----------
   union all

@@ -186,12 +186,10 @@ export interface Hotspot {
   latestReport: string;
 }
 
-export interface NotificationItem {
-  id: string;
-  title: string;
-  message: string;
-  type: 'info' | 'success' | 'warning' | 'error';
-  isRead: boolean;
-  link?: string;
-  createdAt: string;
-}
+/*
+ * NotificationItem used to live here, which is where it ended up because
+ * nothing read it: the notification surfaces derived their feed from
+ * complaint state and never touched public.notifications. It has nothing
+ * to do with analytics, and now that the table is written to it lives in
+ * types/notification.ts alongside the enum it mirrors.
+ */

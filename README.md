@@ -101,7 +101,7 @@ security model.
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
-| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, the work-order state machine, and analytics null handling (`node --test`, no test framework dependency) |
+| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, the work-order state machine, analytics null handling, and notification routing (`node --test`, no test framework dependency) |
 | `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
 | `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
 | `./scripts/verify-bootstrap.sh` | Prove `supabase/bootstrap.sql` upgrades an original-schema database and is safe to re-run |
@@ -220,6 +220,65 @@ Parsing and validation are the parts most worth testing, so they are:
 `npm test` covers fenced replies, prose padding, trailing commas,
 percentage confidences, out-of-range values, unknown enum members,
 arrays and empty bodies, plus each fallback path.
+
+## Notifications
+
+`public.notifications` existed from the initial schema and **nothing ever
+wrote to it**. Both surfaces derived a feed from complaint state instead:
+one entry per report, showing its current status. Real data, but state
+rather than history — a report that passed through triage, assignment,
+work and closure produced a single entry that was overwritten each time,
+so a citizen asked to confirm a repair saw it only if they looked before
+the next transition. Read state lived in a React `Set` and was lost on
+reload.
+
+Now one row per event, written by a database trigger in the same
+transaction as the event itself.
+
+| Event | Recipient |
+|---|---|
+| Report submitted (and therefore created) | The reporting citizen |
+| Triage completed | The citizen |
+| Assigned to a department | The citizen |
+| Accepted, work started, proof submitted | The citizen |
+| Under review, confirmation requested | The citizen |
+| Resolved, reopened, rejected | The citizen |
+| Work order assigned or reassigned | The receiving officer |
+| Work returned for rework | The assigned officer |
+| Anything else | `status_changed`, so a status added later still notifies |
+
+Submission and "successfully created" are one database event — the row
+exists with status `submitted` — so they are one notification. Emitting
+two would mean inventing an event to satisfy a list.
+
+**Officers are not notified about their own actions.** A transition
+notifies the assignee only when somebody else made it, because a tray
+that says "you accepted this" is a tray nobody reads. Government has no
+notification surface of its own in the product, and supervisors and
+administrators reach work orders through the officer workspace, so they
+share that tray rather than getting a route that does not exist.
+
+**Duplicates are structurally impossible.** Every notification carries an
+`event_key` built from the primary key of the audit row that caused it
+plus the recipient, behind a unique index and an `on conflict do nothing`
+insert — so a retried event is a no-op without anybody comparing message
+text.
+
+**Nobody reads or marks anybody else's.** The policies are
+`user_id = auth.uid()` with no staff exemption: an inbox is
+correspondence, not operational data. `emit_notification()` is granted to
+nobody and reachable only from triggers, which closed a real hole — the
+previous insert policy let any staff member write any text into any
+citizen's inbox.
+
+**Refresh, not realtime.** Supabase realtime is in `config.toml` because
+it ships in the default config; nothing in this codebase subscribes to
+anything and no migration adds a publication. A subscription layer for a
+tray would be more machinery than the feature justifies, so refresh is
+explicit: on mount, when the tray opens, when the tab regains focus, and
+after a mutation.
+
+Details in [supabase/README.md](supabase/README.md#notifications).
 
 ## Authority analytics
 
@@ -367,14 +426,16 @@ complete and enforced at the database boundary. See
 Authority dashboards read live aggregates with no invented figures; see
 [Authority analytics](#authority-analytics).
 
+Notifications are real: one row per lifecycle event, per recipient. See
+[Notifications](#notifications).
+
 Known functional gaps: complaints are not assigned to a ward (the `wards`
 table has no geometry to derive one from), so ward health is measurable
-only once something sets `ward_id`; nothing writes to the
-`notifications` table yet — the in-app feed is derived from complaint
-state instead — a citizen cannot reject a repair themselves (a supervisor
-records that verdict on their behalf), and the authority queue lists
-existing work orders, so a complaint with no work order at all is
-assigned from the work-order page rather than from the queue.
+only once something sets `ward_id`; a citizen cannot reject a repair
+themselves (a supervisor records that verdict on their behalf); and the
+authority queue lists existing work orders, so a complaint with no work
+order at all is assigned from the work-order page rather than from the
+queue.
 
 ## Naming
 
