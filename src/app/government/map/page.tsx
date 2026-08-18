@@ -59,7 +59,11 @@ export default function GovernmentMapPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [load]);
 
   const visible = useMemo(

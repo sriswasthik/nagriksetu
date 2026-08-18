@@ -73,7 +73,11 @@ export default function GovernmentAnalyticsPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [load]);
 
   if (isLoading) {

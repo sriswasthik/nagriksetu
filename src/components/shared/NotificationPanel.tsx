@@ -45,8 +45,11 @@ export function NotificationPanel() {
 
   useEffect(() => {
     if (!isCitizen) {
-      setIsLoading(false);
-      return;
+      const timer = setTimeout(() => {
+        setIsLoading(false);
+      }, 0);
+
+      return () => clearTimeout(timer);
     }
 
     let cancelled = false;

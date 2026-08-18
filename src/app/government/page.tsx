@@ -114,7 +114,11 @@ export default function GovernmentDashboard() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [load]);
 
   if (isLoading) {

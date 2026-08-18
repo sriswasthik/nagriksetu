@@ -63,7 +63,11 @@ export default function CitizenMapPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [load]);
 
   /** Only reports with coordinates can appear on a map. */

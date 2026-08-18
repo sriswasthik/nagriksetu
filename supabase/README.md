@@ -164,13 +164,18 @@ Triggers close that gap:
 | `work_orders_enforce_authority` | `complaint_id` is fixed; only oversight reassigns an officer |
 | `verifications_enforce_authority` | Supervisor columns are supervisor-only, citizen columns citizen-only, `verified_at` derived |
 
-The classifier in `src/lib/services/ai.ts` runs in the reporting citizen's
-browser, so the triage columns have exactly one caller-facing entry point:
+The triage columns have exactly one caller-facing entry point:
 `apply_complaint_triage()`, `SECURITY DEFINER`, owner-or-staff, and once
 only for a citizen. It resolves the department from a code rather than
 accepting an id, clamps `priority_score`, stamps `ai_processed_at` from the
 server clock, and leaves `sla_due_at` to the SLA trigger — so no deadline,
 timestamp or routing target is ever caller-supplied.
+
+Its fixed parameter list is also what makes it safe to call with values a
+language model produced. The model's reply is validated against a closed
+schema first (`src/lib/ai/schema.ts`), and then travels as function
+arguments — a department it invents is resolved to an id or rejected, and
+a string it invents cannot reach a query or a privileged operation.
 
 That function sets a transaction-local `app.sanctioned_triage` flag so its
 own UPDATE passes the column trigger. `SECURITY DEFINER` changes the
@@ -181,11 +186,20 @@ is scoped to it, and no function granted to `authenticated` sets arbitrary
 GUCs. There is a regression test that follows a successful triage with a
 direct PATCH in the same transaction and asserts it is still refused.
 
-**Remaining:** a citizen can still influence the *first* classification of
-their own report, because the classifier is client-side. Closing that means
-running it in an Edge Function or a route handler with a service-role key;
-nothing else would change, since `apply_complaint_triage()` is already the
-only write path.
+**Closed:** classification no longer runs in the reporting citizen's
+browser. `POST /api/ai/analyze` authenticates the caller, reads the
+complaint text *from the database* rather than from the request, and calls
+`apply_complaint_triage()` with values the citizen's client never saw.
+
+**Remaining, and deliberate:** the RPC is still granted to
+`authenticated`, because the route handler calls it with the caller's own
+session and no service-role key exists anywhere in this deployment. So a
+determined citizen could still invoke it once, by hand, for a complaint
+they own. Revoking the grant would require a service-role key in the app —
+a strictly worse trade: one leaked key is unrestricted access to every
+row, where this is one self-inflicted classification on one's own report,
+which staff can re-triage. The once-only limit, the department resolution
+and the score clamp all still apply to that call.
 
 ## The complaint lifecycle
 
@@ -214,13 +228,17 @@ come only from the trigger. It is what lets the citizen's timeline date
 each stage; `complaints.updated_at` cannot, because every later change
 overwrites it.
 
-**Triage is not a form submission.** The classifier runs in the
-browser (see the column-authority notes above), so
-`apply_complaint_triage()` is once-only for a citizen and
-`set_complaint_ai_status()` records `processing` and `failed` states. The
-detail page reads `ai_analysis_status` to decide whether to run triage,
-poll, or offer a retry — which is why triage no longer depends on the
-citizen following a particular link after submitting.
+**Triage is not a form submission.** It is a server-side step that may
+fail, so the database tracks it as a state rather than an event:
+`set_complaint_ai_status()` records `processing` and `failed`, and
+`apply_complaint_triage()` stamps `ai_processed_at` on success. The detail
+page reads `ai_analysis_status` to decide whether to start a run, poll, or
+offer a retry — which is why triage does not depend on the citizen
+following a particular link after submitting, and why a second request
+mid-run cannot produce a second classification.
+
+Where those values come from, and how a model failure is recorded rather
+than raised, is in [the root README](../README.md#ai-complaint-triage).
 
 ## Testing
 

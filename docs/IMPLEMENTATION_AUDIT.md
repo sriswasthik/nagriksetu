@@ -225,3 +225,4 @@ an operations dashboard read as real municipal statistics.
 are available in this environment, so all Supabase findings come from reading
 code, migrations and policies. They should be confirmed against a real
 project before the P0 work is signed off.
+   
