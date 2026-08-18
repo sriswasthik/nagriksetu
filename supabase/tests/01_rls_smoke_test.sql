@@ -183,21 +183,46 @@ commit;
 -- ============================================================
 -- F. OFFICER WORKFLOW
 -- ============================================================
+--
+-- Rewritten for the lifecycle triggers in
+-- 20260816120000_work_order_lifecycle.sql. What this section used to do
+-- is a catalogue of what the database now refuses, and it is worth
+-- naming because the old version passing was the evidence that nothing
+-- was enforced:
+--
+--   * `accepted_at = now()` — lifecycle timestamps came from the
+--     caller, so an SLA record could be backdated. Now server-stamped.
+--   * a jump from 'in_progress' to 'proof_submitted' before any proof
+--     row existed. Now refused: proof must exist to be submitted.
+--   * hand-written work_order_updates rows. The audit trail is now
+--     written by a trigger, in the same transaction, so it cannot be
+--     omitted — and inserting them by hand would double-count.
+--   * `update public.complaints set status = ...` to mirror the work
+--     order. Now derived by trigger, so the citizen's view cannot lag.
+--
+-- Each step is its own transaction because that is how the product
+-- issues them, and because clock_timestamp() must advance between them
+-- for the audit trail to be orderable.
 
 begin;
 set local role authenticated;
 select test.login('22222222-2222-2222-2222-222222222222');
+select public.advance_work_order(
+  (select id from public.work_orders), 'accepted', 'On my way'
+);
+commit;
 
-update public.work_orders set status = 'accepted', accepted_at = now();
-insert into public.work_order_updates (work_order_id, status, note, created_by)
-select id, 'accepted', 'On my way', '22222222-2222-2222-2222-222222222222'
-from public.work_orders;
+begin;
+set local role authenticated;
+select test.login('22222222-2222-2222-2222-222222222222');
+select public.advance_work_order(
+  (select id from public.work_orders), 'in_progress'
+);
+commit;
 
-update public.work_orders set status = 'in_progress', started_at = now();
-update public.work_orders set status = 'proof_submitted';
-insert into public.work_order_updates (work_order_id, status, note, created_by)
-select id, 'proof_submitted', 'Patched and compacted', '22222222-2222-2222-2222-222222222222'
-from public.work_orders;
+begin;
+set local role authenticated;
+select test.login('22222222-2222-2222-2222-222222222222');
 
 insert into public.resolution_proofs (work_order_id, storage_path, description, uploaded_by)
 select id,
@@ -206,7 +231,9 @@ select id,
        '22222222-2222-2222-2222-222222222222'
 from public.work_orders;
 
-update public.complaints set status = 'proof_submitted';
+select public.advance_work_order(
+  (select id from public.work_orders), 'proof_submitted', 'Patched and compacted'
+);
 commit;
 
 \echo ''
@@ -215,11 +242,15 @@ select
   (select status::text from public.work_orders) as work_order_status,
   (select count(*) from public.work_order_updates) as audit_entries,
   (select count(*) from public.resolution_proofs) as proofs,
-  'proof_submitted / 2 / 1 expected' as expectation,
+  (select status::text from public.complaints) as complaint_status,
+  'proof_submitted / 3 / 1 / proof_submitted expected' as expectation,
   case
     when (select status::text from public.work_orders) = 'proof_submitted'
-     and (select count(*) from public.work_order_updates) = 2
+     -- Three, one per transition, all written by the trigger.
+     and (select count(*) from public.work_order_updates) = 3
      and (select count(*) from public.resolution_proofs) = 1
+     -- Derived, never set by this test: the citizen's view follows.
+     and (select status::text from public.complaints) = 'proof_submitted'
     then 'ok' else 'FAIL'
   end as result;
 
@@ -317,11 +348,33 @@ rollback;
 -- I. CLOSURE
 -- ============================================================
 
+-- Sign-off, through the stages the state machine requires. The old
+-- version jumped straight from 'proof_submitted' to 'resolved' with a
+-- caller-supplied completed_at and a hand-mirrored complaint status —
+-- all three now refused. Verification exists precisely so that closure
+-- is not one statement.
 begin;
 set local role authenticated;
 select test.login('44444444-4444-4444-4444-444444444444');
-update public.work_orders set status = 'resolved', completed_at = now();
-update public.complaints set status = 'resolved';
+select public.advance_work_order(
+  (select id from public.work_orders), 'supervisor_review'
+);
+commit;
+
+begin;
+set local role authenticated;
+select test.login('44444444-4444-4444-4444-444444444444');
+select public.advance_work_order(
+  (select id from public.work_orders), 'citizen_confirmation'
+);
+commit;
+
+begin;
+set local role authenticated;
+select test.login('44444444-4444-4444-4444-444444444444');
+select public.advance_work_order(
+  (select id from public.work_orders), 'resolved'
+);
 commit;
 
 \echo ''

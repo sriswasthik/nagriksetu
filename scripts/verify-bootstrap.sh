@@ -195,7 +195,16 @@ for pass in 1 2 3; do
     echo "ok"
   else
     echo "FAILED"
-    head -5 "$WORK/err" >&2
+    #
+    # ERROR lines first, then the head of the log.
+    #
+    # This printed `head -5` alone, and a re-run of bootstrap.sql opens
+    # with several NOTICEs about objects that already exist — which is
+    # exactly what a second pass is supposed to produce. So the five lines
+    # shown were all benign and the actual ERROR was never displayed. A
+    # real idempotency bug (a policy created without a matching
+    # `drop policy if exists`) surfaced as "FAILED" with no reason given.
+    grep -E '\bERROR\b' "$WORK/err" >&2 || head -10 "$WORK/err" >&2
     failures=$((failures + 1))
     break
   fi

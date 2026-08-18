@@ -38,13 +38,20 @@ export default function OfficerDashboard() {
     setError(null);
 
     try {
-      const user = await authService.getCurrentUser().catch(() => null);
+      /*
+       * getMyWorkOrders() resolves the officer from the session itself.
+       * This used to be getWorkOrders({ officerId: user?.id }) after a
+       * `.catch(() => null)` — so a failed session lookup dropped the
+       * filter and the page showed whatever row-level security allowed,
+       * which for a supervisor is every work order in the city.
+       */
+      const [user, data] = await Promise.all([
+        authService.getCurrentUser().catch(() => null),
+        workOrderService.getMyWorkOrders(),
+      ]);
 
       if (user?.name) setOfficerName(user.name.split(" ")[0]);
 
-      const data = await workOrderService.getWorkOrders({
-        officerId: user?.id,
-      });
       setWorkOrders(data);
     } catch (loadError) {
       console.error("Failed to load officer dashboard", loadError);

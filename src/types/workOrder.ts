@@ -78,8 +78,17 @@ export interface WorkOrder {
   priorityScore: number;
   priorityLevel: PriorityLevel;
   location: {
-    latitude: number;
-    longitude: number;
+    /**
+     * Null when the complaint has no recorded coordinates.
+     *
+     * These were `number`, and the service coalesced a missing value to
+     * 0 to satisfy that — which is Null Island rather than "absent", so
+     * unlocated work orders were drawn in the Gulf of Guinea and dragged
+     * every map's bounds out to a hemisphere. Nullable here forces each
+     * consumer to decide what "no location" looks like.
+     */
+    latitude: number | null;
+    longitude: number | null;
     address: string;
     ward?: string;
   };
@@ -121,10 +130,39 @@ export interface WorkOrderUpdate {
   status: WorkOrderStatus;
   notes?: string;
   /**
-   * Timestamp to record for the transition. Optional: the service uses
-   * the current time when omitted.
+   * @deprecated Advisory only — the database stamps the transition.
+   *
+   * This value used to be written into accepted_at / started_at /
+   * completed_at. Those columns are SLA evidence, so a caller that could
+   * set them could backdate a repair; the lifecycle trigger now stamps
+   * them from the server clock and refuses an update that carries them.
+   * The field remains so existing callers still compile.
    */
   timestamp?: string;
+}
+
+/**
+ * One recorded transition, from public.work_order_updates.
+ *
+ * The table is append-only — it has a SELECT policy and no INSERT,
+ * UPDATE or DELETE policy for anyone, and its rows come from a trigger.
+ * So this is the history, not a view of it that can drift.
+ */
+export interface WorkOrderHistoryEntry {
+  id: string;
+  status: WorkOrderStatus;
+  note: string | null;
+  /** Null when the transition had no session behind it. */
+  actorId: string | null;
+  actorName: string | null;
+  at: string;
+}
+
+/** A candidate for assignment, with enough load to choose between them. */
+export interface AssignableOfficer {
+  id: string;
+  name: string;
+  openWorkOrders: number;
 }
 
 /*

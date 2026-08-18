@@ -25,11 +25,28 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { formatDateTime } from "@/lib/utils";
+import { toCoordinates } from "@/lib/geo/coordinates";
 import { workOrderService } from "@/lib/services/workOrders";
-import type { WorkOrder } from "@/types/workOrder";
+import { authService } from "@/lib/services/auth";
+import {
+  WORK_ORDER_STATUS_LABELS,
+  type AssignableOfficer,
+  type WorkOrder,
+  type WorkOrderHistoryEntry,
+} from "@/types/workOrder";
 
 const RESOLUTION_NOTES_MIN = 5;
+
+/** Roles that sign work off, mirroring public.is_oversight(). */
+const OVERSIGHT_ROLES = ["supervisor", "government_admin"];
 
 export default function WorkOrderDetailView() {
   const params = useParams();
@@ -37,8 +54,15 @@ export default function WorkOrderDetailView() {
   const id = typeof params.id === "string" ? params.id : "";
 
   const [order, setOrder] = useState<WorkOrder | null>(null);
+  const [history, setHistory] = useState<WorkOrderHistoryEntry[]>([]);
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const [isOversight, setIsOversight] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  /** null while unloaded, so the picker can show a skeleton rather than "none". */
+  const [officers, setOfficers] = useState<AssignableOfficer[] | null>(null);
+  const [pendingOfficerId, setPendingOfficerId] = useState<string | null>(null);
 
   const [isUpdating, setIsUpdating] = useState(false);
   const [notes, setNotes] = useState("");
@@ -51,6 +75,11 @@ export default function WorkOrderDetailView() {
    * the service reads it from the session. Resolving it in the page as
    * well only created a race in which a slow profile lookup produced a
    * placeholder id that the database then rejected.
+   *
+   * The viewer's role IS resolved here, but only to decide which actions
+   * to offer. Every one of them is authorised again by the database, so
+   * a stale or forged role changes what the page draws and nothing about
+   * what it can do.
    */
 
   const load = useCallback(async () => {
@@ -58,12 +87,41 @@ export default function WorkOrderDetailView() {
     setError(null);
 
     try {
-      const data = await workOrderService.getWorkOrderById(id);
+      const [data, viewer] = await Promise.all([
+        workOrderService.getWorkOrderById(id),
+        authService.getCurrentUser().catch(() => null),
+      ]);
+
+      const oversight = viewer?.role
+        ? OVERSIGHT_ROLES.includes(viewer.role)
+        : false;
+
+      setViewerId(viewer?.id ?? null);
+      setIsOversight(oversight);
+
+      /*
+       * Only fetched for oversight, because only oversight can act on
+       * it. assignable_officers() is SECURITY INVOKER, so an officer
+       * calling it would get an empty list rather than a staff
+       * directory — but not asking is better than asking and discarding.
+       */
+      if (oversight) {
+        workOrderService
+          .getAssignableOfficers()
+          .then(setOfficers)
+          .catch((officerError) => {
+            console.error("Failed to load officers", officerError);
+            setOfficers([]);
+          });
+      }
 
       if (!data) {
         setError("That work order could not be found.");
       } else {
         setOrder(data);
+        // Loaded after the order: a missing trail is context, not a
+        // reason to fail the page an officer came here to work from.
+        setHistory(await workOrderService.getWorkOrderHistory(id));
       }
     } catch (loadError) {
       console.error("Failed to load work order", loadError);
@@ -115,6 +173,12 @@ export default function WorkOrderDetailView() {
        * photo, the work order must stay in `in_progress` so the officer
        * can retry, rather than advancing to `proof_submitted` with
        * nothing for the supervisor to verify.
+       *
+       * The database now enforces the same ordering from the other
+       * direction — a move to `proof_submitted` is refused unless a
+       * resolution_proofs row already exists — so a failed upload
+       * followed by a successful transition is no longer possible even
+       * if this sequence were got wrong.
        */
       if (proofFile) {
         await workOrderService.uploadResolutionProof({
@@ -127,8 +191,9 @@ export default function WorkOrderDetailView() {
       const updated = await workOrderService.updateWorkOrderStatus({
         workOrderId: id,
         status: newStatus,
-        notes: notes.length > 0 ? notes : undefined,
-        timestamp: new Date().toISOString(),
+        notes: notes.trim() || undefined,
+        // No timestamp: the database stamps the transition, and sending
+        // one is now refused outright.
       });
 
       setOrder(updated);
@@ -136,23 +201,77 @@ export default function WorkOrderDetailView() {
       setProofFile(null);
       setProofPreview(null);
 
+      // Re-read the trail so the entry this transition just produced —
+      // with its actor and server timestamp — appears without a reload.
+      setHistory(await workOrderService.getWorkOrderHistory(id));
+
       const MESSAGES: Partial<Record<WorkOrder["status"], string>> = {
         accepted: "Assignment accepted",
         in_progress: "Work started",
         proof_submitted: "Proof submitted for review",
+        supervisor_review: "Proof approved, awaiting the citizen",
+        citizen_confirmation: "Sent to the citizen to confirm",
+        resolved: "Work order resolved",
+        reopened: "Sent back for rework",
       };
 
       toast.success(MESSAGES[newStatus] ?? "Work order updated");
     } catch (updateError) {
       console.error("Failed to update status", updateError);
 
-      // Upload and permission failures carry an actionable reason
-      // ("less than 10 MB", "must be signed in"); showing it beats
-      // "Please try again" on an error that retrying cannot fix.
+      /*
+       * The database's refusals are written for the person reading them
+       * — "Submit at least one photograph of the completed work first",
+       * "A work order cannot move from resolved to in_progress" — and
+       * carry a hint. Showing the message beats "Please try again" on an
+       * error that retrying cannot fix.
+       */
       toast.error("Couldn't update the work order", {
         description:
           updateError instanceof Error && updateError.message
             ? updateError.message
+            : "Please try again.",
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  }
+
+  /**
+   * Hands the work order to another officer.
+   *
+   * Goes through assignComplaint() with the complaint id rather than
+   * patching officer_id, so the one path that creates an assignment is
+   * the one path that changes it — and the same trigger clears the
+   * previous officer's timestamps either way.
+   */
+  async function reassign() {
+    if (!order || !pendingOfficerId) return;
+
+    setIsUpdating(true);
+
+    try {
+      const updated = await workOrderService.assignComplaint({
+        complaintId: order.complaintId,
+        officerId: pendingOfficerId,
+        departmentId: order.departmentId || null,
+      });
+
+      setOrder(updated);
+      setPendingOfficerId(null);
+      setHistory(await workOrderService.getWorkOrderHistory(id));
+
+      // Loads shift, so the picker's counts are now stale.
+      setOfficers(await workOrderService.getAssignableOfficers());
+
+      toast.success(`Assigned to ${updated.officerName || "the officer"}`);
+    } catch (assignError) {
+      console.error("Failed to reassign work order", assignError);
+
+      toast.error("Couldn't reassign this work order", {
+        description:
+          assignError instanceof Error && assignError.message
+            ? assignError.message
             : "Please try again.",
       });
     } finally {
@@ -197,9 +316,47 @@ export default function WorkOrderDetailView() {
     );
   }
 
-  const isClosed = ["resolved", "proof_submitted"].includes(order.status);
+  /*
+   * `isAssignee` gates the officer's own actions. Previously the page
+   * offered "Accept assignment" to anyone who could open the URL, which
+   * for a supervisor is every work order in the city — the database
+   * refused it, so what they got was a policy error where a disabled
+   * control belonged.
+   */
+  const isAssignee = Boolean(viewerId) && order.officerId === viewerId;
+
+  /*
+   * The site, if it has one. An officer navigates from this, so a
+   * confident link to 0,0 is worse than no link — it sends them to the
+   * wrong ocean rather than telling them the location was never recorded.
+   */
+  const sitePoint = toCoordinates(
+    order.location.latitude,
+    order.location.longitude
+  );
+
+  const isFinished = order.status === "resolved";
+  const awaitingSignOff = [
+    "proof_submitted",
+    "supervisor_review",
+    "citizen_confirmation",
+  ].includes(order.status);
+
   const canSubmitProof =
     Boolean(proofPreview) && notes.trim().length >= RESOLUTION_NOTES_MIN;
+
+  /** The officer's next step, or null when it is not theirs to take. */
+  const officerAction = !isAssignee
+    ? null
+    : order.status === "assigned"
+      ? ("accepted" as const)
+      : order.status === "accepted"
+        ? ("in_progress" as const)
+        : order.status === "reopened"
+          ? ("in_progress" as const)
+          : order.status === "in_progress"
+            ? ("proof_submitted" as const)
+            : null;
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -281,10 +438,12 @@ export default function WorkOrderDetailView() {
           variant={order.status === "assigned" ? "warning" : "info"}
           className="capitalize"
         >
-          {order.status.replace(/_/g, " ")}
+          {WORK_ORDER_STATUS_LABELS[order.status]}
         </Badge>
         <PriorityBadge level={order.priorityLevel} score={order.priorityScore} />
-        {!isClosed && <SLAIndicator hoursRemaining={order.slaHoursRemaining} />}
+        {/* The clock stops once the job is resolved, not once proof is
+            filed — an SLA that expires during sign-off is still missed. */}
+        {!isFinished && <SLAIndicator hoursRemaining={order.slaHoursRemaining} />}
 
         <span className="ml-auto text-xs text-muted-foreground">
           {order.departmentName}
@@ -297,7 +456,7 @@ export default function WorkOrderDetailView() {
           <section
             aria-labelledby="action-heading"
             className={
-              isClosed
+              isFinished
                 ? "rounded-lg border border-emerald-200 bg-emerald-50/60 p-5"
                 : "rounded-lg border border-primary/40 bg-card p-5 shadow-sm"
             }
@@ -306,16 +465,36 @@ export default function WorkOrderDetailView() {
               id="action-heading"
               className="text-sm font-semibold text-foreground"
             >
-              {order.status === "assigned"
-                ? "Accept this assignment"
-                : order.status === "accepted"
-                  ? "Start work"
-                  : order.status === "in_progress"
-                    ? "Submit proof of completion"
-                    : "Work submitted"}
+              {isFinished
+                ? "Resolved"
+                : officerAction === "accepted"
+                  ? "Accept this assignment"
+                  : officerAction === "in_progress"
+                    ? order.status === "reopened"
+                      ? "Rework requested"
+                      : "Start work"
+                    : officerAction === "proof_submitted"
+                      ? "Submit proof of completion"
+                      : awaitingSignOff
+                        ? "Verification"
+                        : "Assigned to another officer"}
             </h2>
 
-            {order.status === "assigned" && (
+            {/*
+              Someone who is neither the assignee nor oversight can reach
+              this page — a supervisor's colleague, an admin browsing the
+              queue. Saying so is better than showing them an "Accept"
+              button that the database will refuse.
+            */}
+            {!isAssignee && !isOversight && !isFinished && (
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                {order.officerName
+                  ? `${order.officerName} is carrying out this work. You can review it here, but only the assigned officer can advance it.`
+                  : "No officer has been assigned to this work order yet."}
+              </p>
+            )}
+
+            {officerAction === "accepted" && (
               <div className="mt-3 space-y-4">
                 <p className="text-sm leading-relaxed text-muted-foreground">
                   Accepting confirms you have received this work order and
@@ -337,10 +516,12 @@ export default function WorkOrderDetailView() {
               </div>
             )}
 
-            {order.status === "accepted" && (
+            {officerAction === "in_progress" && (
               <div className="mt-3 space-y-4">
                 <p className="text-sm leading-relaxed text-muted-foreground">
-                  Mark work as started once you are on site.
+                  {order.status === "reopened"
+                    ? "This repair was rejected and has come back to you. Mark work as restarted once you are on site again."
+                    : "Mark work as started once you are on site."}
                 </p>
                 <Button
                   onClick={() => updateStatus("in_progress")}
@@ -349,12 +530,12 @@ export default function WorkOrderDetailView() {
                   {isUpdating && (
                     <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
                   )}
-                  Start work
+                  {order.status === "reopened" ? "Resume work" : "Start work"}
                 </Button>
               </div>
             )}
 
-            {order.status === "in_progress" && (
+            {officerAction === "proof_submitted" && (
               <div className="mt-4 space-y-5">
                 <div>
                   <label
@@ -468,7 +649,128 @@ export default function WorkOrderDetailView() {
               </div>
             )}
 
-            {isClosed && (
+            {isFinished && (
+              <div className="mt-3 flex items-start gap-3">
+                <CheckCircle2
+                  className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600"
+                  aria-hidden="true"
+                />
+                <div>
+                  <p className="text-sm font-medium text-emerald-900">
+                    Work order resolved
+                  </p>
+                  <p className="mt-0.5 text-sm text-emerald-800/80">
+                    {order.completedAt
+                      ? `Closed ${formatDateTime(order.completedAt)}.`
+                      : "The citizen's report is now marked resolved."}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/*
+              ---------- Sign-off ----------
+
+              The lifecycle used to dead-end here. An officer submitted
+              proof, the panel said "awaiting supervisor verification",
+              and nothing in the product could provide it — so no work
+              order ever reached `resolved` and no citizen ever saw their
+              report closed.
+
+              Supervisors and admins already open this same page from the
+              authority queue, so the verdict belongs on it rather than
+              in a new screen. Every button here is authorised again by
+              the state machine: an officer who forged the role flag
+              would get a refusal, not a resolved work order.
+            */}
+            {awaitingSignOff && isOversight && (
+              <div className="mt-4 space-y-4">
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  {order.status === "proof_submitted"
+                    ? "Check the photographs against what the citizen reported, then approve or send the job back."
+                    : order.status === "supervisor_review"
+                      ? "Proof is approved. Pass it to the citizen to confirm, or send it back for rework."
+                      : "The citizen has been asked to confirm. Close the job, or send it back if they are not satisfied."}
+                </p>
+
+                <div>
+                  <label
+                    htmlFor="verdict-notes"
+                    className="mb-2 block text-sm font-medium text-foreground"
+                  >
+                    Notes{" "}
+                    <span className="font-normal text-muted-foreground">
+                      (optional — the citizen sees these on their timeline)
+                    </span>
+                  </label>
+                  <Textarea
+                    id="verdict-notes"
+                    value={notes}
+                    onChange={(event) => setNotes(event.target.value)}
+                    placeholder="What you checked, or what still needs doing."
+                    className="min-h-20 resize-y"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {order.status === "proof_submitted" && (
+                    <Button
+                      onClick={() => updateStatus("supervisor_review")}
+                      disabled={isUpdating}
+                    >
+                      {isUpdating && (
+                        <Loader2
+                          className="mr-1 h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                      )}
+                      Approve the proof
+                    </Button>
+                  )}
+
+                  {order.status === "supervisor_review" && (
+                    <Button
+                      onClick={() => updateStatus("citizen_confirmation")}
+                      disabled={isUpdating}
+                    >
+                      {isUpdating && (
+                        <Loader2
+                          className="mr-1 h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                      )}
+                      Ask the citizen to confirm
+                    </Button>
+                  )}
+
+                  {order.status === "citizen_confirmation" && (
+                    <Button
+                      onClick={() => updateStatus("resolved")}
+                      disabled={isUpdating}
+                    >
+                      {isUpdating && (
+                        <Loader2
+                          className="mr-1 h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                      )}
+                      Mark resolved
+                    </Button>
+                  )}
+
+                  <Button
+                    variant="outline"
+                    onClick={() => updateStatus("reopened")}
+                    disabled={isUpdating}
+                  >
+                    Send back for rework
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Awaiting somebody else's verdict, with no verdict to give. */}
+            {awaitingSignOff && !isOversight && (
               <div className="mt-3 flex items-start gap-3">
                 <CheckCircle2
                   className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600"
@@ -479,7 +781,9 @@ export default function WorkOrderDetailView() {
                     Resolution submitted
                   </p>
                   <p className="mt-0.5 text-sm text-emerald-800/80">
-                    Awaiting supervisor verification and citizen confirmation.
+                    {order.status === "citizen_confirmation"
+                      ? "Awaiting the citizen's confirmation."
+                      : "Awaiting supervisor verification and citizen confirmation."}
                   </p>
                 </div>
               </div>
@@ -599,52 +903,86 @@ export default function WorkOrderDetailView() {
               />
             </div>
 
-            <div className="p-3">
-              <Button asChild variant="outline" className="w-full">
-                <a
-                  href={`https://www.openstreetmap.org/?mlat=${order.location.latitude}&mlon=${order.location.longitude}#map=18/${order.location.latitude}/${order.location.longitude}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <ExternalLink className="mr-1 h-4 w-4" aria-hidden="true" />
-                  Open in maps
-                </a>
-              </Button>
-            </div>
+            {/*
+              Offered only when there is somewhere to open.
+              order.location.latitude used to be coalesced from null to 0,
+              so this link was always rendered and, for an unlocated work
+              order, sent the officer to the Gulf of Guinea.
+            */}
+            {sitePoint && (
+              <div className="p-3">
+                <Button asChild variant="outline" className="w-full">
+                  <a
+                    href={`https://www.openstreetmap.org/?mlat=${sitePoint.latitude}&mlon=${sitePoint.longitude}#map=18/${sitePoint.latitude}/${sitePoint.longitude}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ExternalLink className="mr-1 h-4 w-4" aria-hidden="true" />
+                    Open in maps
+                  </a>
+                </Button>
+              </div>
+            )}
           </section>
 
-          {/* ---- Audit trail ---- */}
+          {/*
+            ---------- Audit trail ----------
+
+            The real one, from public.work_order_updates: every recorded
+            transition, who made it, when, and what they wrote.
+
+            This panel used to list four timestamp columns off the work
+            order — Created, Assigned, Accepted, Started, Completed,
+            Verified — which could not name an actor, and could not show
+            a repair that came back: a second visit overwrites
+            started_at, so a reopened job looked like it had only ever
+            been done once. The audit table was being written the whole
+            time and read for nothing but the latest note.
+          */}
           <section
             aria-labelledby="trail-heading"
             className="rounded-lg border bg-card p-5"
           >
             <h2 id="trail-heading" className="text-sm font-semibold text-foreground">
-              Timeline
+              History
             </h2>
 
-            <dl className="mt-3 space-y-0 text-sm">
-              {[
-                { label: "Created", value: order.createdAt },
-                { label: "Assigned", value: order.assignedAt },
-                { label: "Accepted", value: order.acceptedAt },
-                { label: "Started", value: order.startedAt },
-                { label: "Completed", value: order.completedAt },
-                { label: "Verified", value: order.verifiedAt },
-              ]
-                .filter((entry) => entry.value)
-                .map((entry) => (
-                  <div
-                    key={entry.label}
-                    className="flex items-baseline justify-between gap-3 border-b py-2.5 last:border-0"
-                  >
-                    <dt className="text-muted-foreground">{entry.label}</dt>
-                    <dd className="text-right text-xs font-medium text-foreground">
-                      {formatDateTime(entry.value as string)}
-                    </dd>
-                  </div>
-                ))}
+            {history.length > 0 ? (
+              <ol className="mt-3 space-y-0 text-sm">
+                {history.map((entry) => (
+                  <li key={entry.id} className="border-b py-2.5 last:border-0">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="font-medium text-foreground">
+                        {WORK_ORDER_STATUS_LABELS[entry.status]}
+                      </span>
+                      <span className="shrink-0 text-right text-xs text-muted-foreground">
+                        {formatDateTime(entry.at)}
+                      </span>
+                    </div>
 
-              <div className="flex items-baseline justify-between gap-3 border-t pt-3">
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {/* A transition with no session behind it — a
+                          migration, a server task — is reported as such
+                          rather than attributed to whoever is nearest. */}
+                      {entry.actorName ?? "Recorded by the system"}
+                    </p>
+
+                    {entry.note && (
+                      <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                        {entry.note}
+                      </p>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="mt-3 text-sm text-muted-foreground">
+                No transitions have been recorded yet.
+              </p>
+            )}
+
+            <dl className="mt-4 border-t pt-3 text-sm">
+              <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-muted-foreground">SLA deadline</dt>
                 <dd className="text-right text-xs font-semibold text-amber-700">
                   {formatDateTime(order.slaDeadline)}
@@ -662,6 +1000,14 @@ export default function WorkOrderDetailView() {
                   {order.officerName || "Unassigned"}
                 </dd>
               </div>
+              {order.officerId && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Assigned</dt>
+                  <dd className="text-xs text-foreground">
+                    {formatDateTime(order.assignedAt)}
+                  </dd>
+                </div>
+              )}
               {order.supervisorName && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">Supervisor</dt>
@@ -677,6 +1023,76 @@ export default function WorkOrderDetailView() {
                 </dd>
               </div>
             </dl>
+
+            {/*
+              ---------- Assign or reassign ----------
+
+              Only oversight, mirroring enforce_work_order_authority():
+              an assigned officer changing officer_id is refused with
+              "Only a supervisor or administrator may reassign a work
+              order", so offering the control to them would be offering
+              a refusal.
+
+              An unassigned work order could previously not be advanced
+              by anybody and had nowhere in the product to give it an
+              owner, so it sat in the queue permanently. Reassigning also
+              clears the previous officer's acceptance and start times —
+              those describe work this assignee has not done — while the
+              audit trail keeps the whole history.
+            */}
+            {isOversight && !isFinished && (
+              <div className="mt-4 border-t pt-4">
+                <label
+                  htmlFor="assign-officer"
+                  className="mb-2 block text-sm font-medium text-foreground"
+                >
+                  {order.officerId ? "Reassign to" : "Assign to"}
+                </label>
+
+                {officers === null ? (
+                  <Skeleton className="h-9 w-full rounded-md" />
+                ) : officers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No officers are available to assign.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    <Select
+                      value={pendingOfficerId ?? ""}
+                      onValueChange={setPendingOfficerId}
+                    >
+                      <SelectTrigger id="assign-officer">
+                        <SelectValue placeholder="Choose an officer" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {officers
+                          .filter((candidate) => candidate.id !== order.officerId)
+                          .map((candidate) => (
+                            <SelectItem key={candidate.id} value={candidate.id}>
+                              {candidate.name} — {candidate.openWorkOrders} open
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+
+                    <Button
+                      variant="outline"
+                      className="w-full"
+                      disabled={isUpdating || !pendingOfficerId}
+                      onClick={reassign}
+                    >
+                      {isUpdating && (
+                        <Loader2
+                          className="mr-1 h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                      )}
+                      {order.officerId ? "Reassign" : "Assign"}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </div>
       </div>

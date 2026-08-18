@@ -62,14 +62,27 @@ rollback;
 \echo '(expected: row-level security violation)'
 
 \echo ''
-\echo '### A3. An anonymous caller cannot call the analytics functions usefully'
+\echo '### A3. An anonymous caller cannot call the analytics functions at all'
+--
+-- This used to assert that anon got `0` back. It did — but only because
+-- row-level security showed it no rows to count. PostgreSQL grants
+-- EXECUTE to PUBLIC by default, so anon could genuinely run every
+-- analytics function, and the right answer arrived as a consequence
+-- rather than as a decision. A future policy mistake would then have
+-- surfaced as a silent leak to unauthenticated callers.
+--
+-- 20260817120000 revokes EXECUTE from PUBLIC, so the call is refused
+-- outright. RLS is still the boundary that matters — a citizen calling
+-- these legitimately aggregates their own complaints (01's section I2)
+-- — this is the second layer, for the caller RLS has nothing to say
+-- about.
 begin;
 set local role anon;
-select (public.analytics_summary() ->> 'totalComplaints') as anon_total,
-       '0 expected' as expectation,
-       case when (public.analytics_summary() ->> 'totalComplaints') = '0'
-            then 'ok' else 'FAIL' end as result;
+
+-- EXPECTED ERROR: permission denied for function analytics_summary
+select public.analytics_summary();
 rollback;
+\echo '(expected: permission denied — anon has no EXECUTE)'
 
 
 -- ============================================================

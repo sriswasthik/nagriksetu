@@ -100,6 +100,27 @@ from (
       where tgname = 'complaints_enforce_authority' and not tgisinternal
     ),
     'Column authority. Absent = a citizen can close their own complaint'
+  union all
+  select 'trigger', 'work_orders_enforce_transition',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_orders_enforce_transition' and not tgisinternal
+    ),
+    'The work-order state machine. Absent = an officer can resolve their own work'
+  union all
+  select 'trigger', 'work_orders_record_transition',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_orders_record_transition' and not tgisinternal
+    ),
+    'Writes the audit trail. Absent = transitions happen with no record of who'
+  union all
+  select 'trigger', 'work_orders_sync_complaint',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_orders_sync_complaint' and not tgisinternal
+    ),
+    'Absent = the citizen''s tracking view never follows the officer''s work'
 
   -- ---------- functions ----------
   union all
@@ -118,6 +139,65 @@ from (
   select 'function', 'analytics_summary',
     exists (select 1 from pg_proc where proname = 'analytics_summary'),
     'Authority dashboard figures'
+  union all
+  select 'function', 'advance_work_order',
+    exists (select 1 from pg_proc where proname = 'advance_work_order'),
+    'How an officer accepts, starts and completes work'
+  union all
+  select 'function', 'assignable_officers',
+    exists (select 1 from pg_proc where proname = 'assignable_officers'),
+    'Absent = nothing can be assigned to anybody'
+  union all
+  select 'function', 'complaint_resolution_times',
+    exists (select 1 from pg_proc where proname = 'complaint_resolution_times'),
+    'The one definition of "resolved at". Absent = every analytics figure is unavailable'
+  union all
+  select 'function', 'analytics_status_distribution',
+    exists (select 1 from pg_proc where proname = 'analytics_status_distribution'),
+    'Complaints by status on the authority overview'
+  union all
+  select 'function', 'analytics_hotspots',
+    exists (select 1 from pg_proc where proname = 'analytics_hotspots'),
+    'Geographic concentration. Absent = the hotspot ranking is empty'
+  union all
+  select 'function', 'emit_notification',
+    exists (select 1 from pg_proc where proname = 'emit_notification'),
+    'Absent = no lifecycle event ever notifies anybody'
+  union all
+  select 'function', 'unread_notification_count',
+    exists (select 1 from pg_proc where proname = 'unread_notification_count'),
+    'The notification badge'
+  union all
+  select 'trigger', 'complaint_status_notify',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'complaint_status_notify' and not tgisinternal
+    ),
+    'Absent = a citizen is never told their report progressed'
+  union all
+  select 'constraint', 'complaints coordinate checks',
+    (
+      select count(*) = 4 from pg_constraint
+      where conrelid = 'public.complaints'::regclass
+        and conname in (
+          'complaints_latitude_range',
+          'complaints_longitude_range',
+          'complaints_coordinates_paired',
+          'complaints_not_null_island'
+        )
+    ),
+    'Absent = a direct insert can store 0,0 or a latitude of 999'
+  union all
+  select 'function', 'is_valid_coordinate',
+    exists (select 1 from pg_proc where proname = 'is_valid_coordinate'),
+    'The shared "is this a place" predicate'
+  union all
+  select 'trigger', 'work_order_assignment_notify',
+    exists (
+      select 1 from pg_trigger
+      where tgname = 'work_order_assignment_notify' and not tgisinternal
+    ),
+    'Absent = an officer is never told a job is theirs'
 
   -- ---------- storage ----------
   union all

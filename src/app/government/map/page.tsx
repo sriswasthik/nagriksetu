@@ -18,7 +18,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
+import { analyticsService, formatCount } from "@/lib/services/analytics";
+import { isRenderableCoordinate } from "@/lib/geo/coordinates";
 import type { WorkOrder } from "@/types/workOrder";
+import type { Hotspot } from "@/types/analytics";
 
 const WorkOrderMap = dynamic(
   () => import("@/components/map/WorkOrderMapInner"),
@@ -36,9 +39,17 @@ const MATCHERS: Record<HotspotFilter, (wo: WorkOrder) => boolean> = {
 /**
  * Geographic hotspots. Answers "where is the pressure concentrated?"
  * — clusters of urgent markers are the signal, not any single pin.
+ *
+ * The concentration itself is now counted rather than eyeballed.
+ * analytics_hotspots() groups complaints by a ~550 m grid in Postgres and
+ * returns the busiest neighbourhoods, so the page can state where the
+ * pressure is instead of leaving a reader to judge marker density — and
+ * the ranking covers every complaint, not only the work orders plotted
+ * below.
  */
 export default function GovernmentMapPage() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [hotspots, setHotspots] = useState<Hotspot[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<HotspotFilter>("all");
@@ -49,7 +60,19 @@ export default function GovernmentMapPage() {
     setError(null);
 
     try {
-      setWorkOrders(await workOrderService.getWorkOrders());
+      /*
+       * Markers are capped. This was an unbounded select joining four
+       * tables so the browser could plot every pin in the city; the
+       * concentration ranking beside it is aggregated server-side and
+       * does not depend on how many markers were fetched.
+       */
+      const [orders, spots] = await Promise.all([
+        workOrderService.getWorkOrders({ limit: 200 }),
+        analyticsService.getHotspots({ minReports: 2, limit: 8 }).catch(() => []),
+      ]);
+
+      setWorkOrders(orders);
+      setHotspots(spots);
     } catch (loadError) {
       console.error("Failed to load map data", loadError);
       setError("We couldn't load the map. Please try again.");
@@ -66,23 +89,42 @@ export default function GovernmentMapPage() {
     return () => clearTimeout(timer);
   }, [load]);
 
+  /*
+   * Only the ones the map can actually draw.
+   *
+   * The chips counted every fetched work order, so "All 41" sat above a
+   * map showing 38 markers with nothing to explain the difference —
+   * `mapWorkOrder()` was coalescing missing coordinates to 0,0 and the map
+   * drew those in the Gulf of Guinea. Now they are excluded from both, and
+   * the count says how many were left out.
+   */
+  const mappable = useMemo(
+    () =>
+      workOrders.filter((wo) =>
+        isRenderableCoordinate(wo.location.latitude, wo.location.longitude)
+      ),
+    [workOrders]
+  );
+
+  const unmapped = workOrders.length - mappable.length;
+
   const visible = useMemo(
-    () => workOrders.filter(MATCHERS[filter]),
-    [workOrders, filter]
+    () => mappable.filter(MATCHERS[filter]),
+    [mappable, filter]
   );
 
   const filterOptions: FilterOption<HotspotFilter>[] = [
-    { value: "all", label: "All", count: workOrders.length },
+    { value: "all", label: "All", count: mappable.length },
     {
       value: "urgent",
       label: "Urgent",
-      count: workOrders.filter(MATCHERS.urgent).length,
+      count: mappable.filter(MATCHERS.urgent).length,
       tone: "attention",
     },
     {
       value: "breaching",
       label: "Near breach",
-      count: workOrders.filter(MATCHERS.breaching).length,
+      count: mappable.filter(MATCHERS.breaching).length,
     },
   ];
 
@@ -101,8 +143,71 @@ export default function GovernmentMapPage() {
     <div>
       <PageHeader
         title="Geographic Hotspots"
-        description="Open work orders plotted across the city, coloured by status."
+        description="Where reports concentrate, and the work orders behind them."
       />
+
+      {/*
+        ---------- Measured concentration ----------
+
+        Counted per area in Postgres rather than judged from marker
+        density, and drawn from every complaint rather than only the work
+        orders plotted below — an untriaged report with no work order is
+        still pressure on a neighbourhood.
+      */}
+      {hotspots.length > 0 && (
+        <section
+          aria-labelledby="concentration-heading"
+          className="mb-6 rounded-lg border bg-card p-5"
+        >
+          <h2
+            id="concentration-heading"
+            className="text-sm font-semibold text-foreground"
+          >
+            Busiest areas
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Reports grouped by locality, most open work first. Areas with a
+            single report are not listed.
+          </p>
+
+          <ul className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {hotspots.map((spot) => (
+              <li
+                key={`${spot.latitude},${spot.longitude}`}
+                className="rounded-lg border bg-muted/30 p-3"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-xs font-semibold text-foreground">
+                    {spot.dominantCategory}
+                  </span>
+                  <span className="tabular shrink-0 text-lg font-bold text-foreground">
+                    {formatCount(spot.openReports)}
+                  </span>
+                </div>
+
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  open of {formatCount(spot.reports)} reported
+                </p>
+
+                {spot.criticalReports > 0 && (
+                  <Badge variant="critical" className="mt-2 text-[0.6875rem]">
+                    {spot.criticalReports} critical
+                  </Badge>
+                )}
+
+                <a
+                  href={`https://www.openstreetmap.org/?mlat=${spot.latitude}&mlon=${spot.longitude}#map=16/${spot.latitude}/${spot.longitude}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 block truncate text-xs text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {spot.latitude.toFixed(4)}, {spot.longitude.toFixed(4)}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {error && (
         <ErrorState
@@ -113,7 +218,18 @@ export default function GovernmentMapPage() {
         />
       )}
 
-      {workOrders.length === 0 && !error ? (
+      {/*
+        Said rather than hidden. A queue of 41 above a map of 38 markers
+        needs the three explained, or the map reads as dropping work.
+      */}
+      {unmapped > 0 && !error && (
+        <p className="mb-4 text-xs text-muted-foreground">
+          {unmapped} {unmapped === 1 ? "work order has" : "work orders have"} no
+          recorded coordinates and cannot be mapped.
+        </p>
+      )}
+
+      {mappable.length === 0 && !error ? (
         <EmptyState
           icon={MapPin}
           title="No mapped work orders"

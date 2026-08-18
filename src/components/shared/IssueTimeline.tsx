@@ -72,13 +72,31 @@ export function IssueTimeline({
    */
   const stageTimestamps = new Map<string, string>();
 
+  /*
+   * The note the officer wrote with that transition.
+   *
+   * complaint_status_history.note existed and was never populated, so a
+   * citizen's timeline could say "In Progress" and never why, even when
+   * the officer had written down exactly what they were doing. The
+   * lifecycle triggers now carry the note across, and this is where it
+   * reaches the person who reported the issue.
+   */
+  const stageNotes = new Map<string, string>();
+
   for (const event of history ?? []) {
     const stage = TIMELINE_STAGES.find((candidate) =>
       candidate.statuses.includes(event.status)
     );
 
-    if (stage && !stageTimestamps.has(stage.key)) {
+    if (!stage) continue;
+
+    if (!stageTimestamps.has(stage.key)) {
       stageTimestamps.set(stage.key, event.created_at);
+    }
+
+    // First note for the stage, to match the timestamp beside it.
+    if (event.note && !stageNotes.has(stage.key)) {
+      stageNotes.set(stage.key, event.note);
     }
   }
 
@@ -143,6 +161,8 @@ export function IssueTimeline({
           const timestamp =
             stageTimestamps.get(stage.key) ??
             (isCurrent ? updatedAt : index === 0 ? createdAt : undefined);
+
+          const note = stageNotes.get(stage.key);
 
           return (
             <li key={stage.key} className="relative flex gap-4">
@@ -222,6 +242,18 @@ export function IssueTimeline({
                 <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
                   {description}
                 </p>
+
+                {/*
+                  What the officer actually wrote. Set apart from the
+                  generic stage description because it is the one line
+                  here about this citizen's specific issue rather than
+                  about the process.
+                */}
+                {note && (
+                  <p className="mt-2 border-l-2 border-primary/30 pl-3 text-sm leading-relaxed text-foreground">
+                    {note}
+                  </p>
+                )}
 
                 {timestamp && (
                   <p className="mt-1.5 text-xs text-muted-foreground/80">

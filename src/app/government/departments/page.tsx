@@ -16,7 +16,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { analyticsService } from "@/lib/services/analytics";
+import {
+  analyticsService,
+  formatHours,
+  formatPercent,
+} from "@/lib/services/analytics";
 import type { DepartmentPerformance } from "@/types/analytics";
 
 /**
@@ -134,28 +138,41 @@ export default function GovernmentDepartmentsPage() {
                 </TableCell>
 
                 <TableCell className="tabular text-right text-muted-foreground">
-                  {dept.avgResolutionHours}h
+                  {formatHours(dept.avgResolutionHours, "—")}
                 </TableCell>
 
                 <TableCell>
-                  <div className="flex items-center gap-2.5">
-                    <Progress
-                      value={dept.slaCompliance}
-                      className="h-1.5 flex-1"
-                      aria-label={`${dept.department} SLA compliance`}
-                    />
-                    <span
-                      className={
-                        dept.slaCompliance >= 90
-                          ? "tabular w-11 shrink-0 text-right text-xs font-semibold text-emerald-700"
-                          : dept.slaCompliance >= 75
-                            ? "tabular w-11 shrink-0 text-right text-xs font-semibold text-amber-700"
-                            : "tabular w-11 shrink-0 text-right text-xs font-semibold text-destructive"
-                      }
-                    >
-                      {dept.slaCompliance}%
+                  {/*
+                    A department with no report carrying a deadline has no
+                    compliance figure. It used to be coalesced to 0, which
+                    rendered here as a full-width red bar and a bold red
+                    "0%" — an alarming claim about a department that had
+                    simply never been given anything.
+                  */}
+                  {dept.slaCompliance === null ? (
+                    <span className="text-xs text-muted-foreground">
+                      No data
                     </span>
-                  </div>
+                  ) : (
+                    <div className="flex items-center gap-2.5">
+                      <Progress
+                        value={dept.slaCompliance}
+                        className="h-1.5 flex-1"
+                        aria-label={`${dept.department} SLA compliance`}
+                      />
+                      <span
+                        className={
+                          dept.slaCompliance >= 90
+                            ? "tabular w-11 shrink-0 text-right text-xs font-semibold text-emerald-700"
+                            : dept.slaCompliance >= 75
+                              ? "tabular w-11 shrink-0 text-right text-xs font-semibold text-amber-700"
+                              : "tabular w-11 shrink-0 text-right text-xs font-semibold text-destructive"
+                        }
+                      >
+                        {formatPercent(dept.slaCompliance)}
+                      </span>
+                    </div>
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -165,7 +182,9 @@ export default function GovernmentDepartmentsPage() {
 
       <p className="mt-4 text-xs text-muted-foreground">
         Compliance is measured against the target window for each report&apos;s
-        priority level.
+        priority level, from the recorded moment it was resolved.
+        &ldquo;No data&rdquo; means no report in that department has both a
+        deadline and a recorded resolution — not that compliance is zero.
       </p>
     </div>
   );

@@ -101,9 +101,10 @@ security model.
 | `npm run build` | Production build (also type-checks) |
 | `npm run start` | Serve the production build |
 | `npm run lint` | ESLint |
-| `npm test` | Unit tests — model-output parsing, schema validation and fallback selection (`node --test`, no test framework dependency) |
+| `npm test` | Unit tests — model-output parsing, schema validation, fallback selection, the work-order state machine, analytics null handling, notification routing, and coordinate validation (`node --test`, no test framework dependency) |
 | `./supabase/tests/run.sh` | Apply the migrations to a throwaway PostgreSQL cluster and exercise every RLS policy and authorization rule |
 | `./scripts/verify-route-protection.sh` | Build, serve, and assert that no protected route is reachable without a session |
+| `node scripts/verify-viewports.mjs` | Load the app at 320/375/768/1440 and assert no horizontal overflow and no hydration mismatch (drives the pre-installed Chromium over CDP; no dependency) |
 | `./scripts/verify-bootstrap.sh` | Prove `supabase/bootstrap.sql` upgrades an original-schema database and is safe to re-run |
 | `./scripts/generate-bootstrap.sh` | Rebuild `supabase/bootstrap.sql` after adding a migration |
 
@@ -221,6 +222,289 @@ Parsing and validation are the parts most worth testing, so they are:
 percentage confidences, out-of-range values, unknown enum members,
 arrays and empty bodies, plus each fallback path.
 
+## Maps and geolocation
+
+### One definition of "is this a place"
+
+`src/lib/geo/coordinates.ts` is the single validator, used by every map and
+mirrored by CHECK constraints on `public.complaints`. It replaced four
+different answers, three of them wrong:
+
+| Was | Problem |
+|---|---|
+| `lat !== null && lng !== null` | passes `NaN`, passes `999` |
+| `typeof lat === "number"` | passes `NaN` — `typeof NaN` is `"number"` |
+| nothing at all | `StaticLocationMap` rendered whatever it was handed |
+| `complaint?.latitude ?? 0` | **invents Null Island** |
+
+The last one did real damage. An unlocated work order became a well-typed
+`0,0` that every downstream check accepted, and `fitBounds` over a real
+city plus the Gulf of Guinea frames a hemisphere — so **one row without
+coordinates collapsed every genuine marker on the authority map to a
+pixel.** Work-order coordinates are now `number | null`, and a map with
+nothing to draw says "No location recorded" instead.
+
+`0,0` is rejected rather than plotted: a device with no fix, an empty
+string parsed, and a zeroed struct all produce it, so it is
+indistinguishable from a failed read. Zero on *one* axis is fine — the
+equator and the prime meridian are real places.
+
+Longitudes beyond ±180 are **wrapped, not rejected**. Leaflet reports the
+longitude of the world copy that was clicked, so panning across the date
+line and tapping gives ~+540 for a place at ~-180 — the same spot, which
+the database would nonetheless refuse at the end of the form. Wrapping
+happens where the pin enters, so what the citizen placed is what gets
+stored.
+
+### Geolocation failures are typed
+
+`GeolocationError` carries a `failure` kind and a `retryable` flag, so the
+UI can respond to the actual problem rather than matching on prose:
+
+| Failure | What the picker does |
+|---|---|
+| `denied` | Withdraws the button — the browser will not prompt again — and points at the map |
+| `timeout` / `unavailable` | Offers a retry |
+| `unsupported` | Map only |
+| `invalid-fix` | The device reported `0,0` or worse; map only |
+
+A fix coarser than 100 m is accepted and **flagged**: "accurate to about
+480 m — check the pin". Presenting a city-block-sized guess as a captured
+location is how a crew is sent to the wrong street.
+
+### Reverse geocoding: what it costs and what limits it
+
+BigDataCloud's keyless endpoint, which was already present — no new
+provider. It sends a citizen's location to somebody who is not the
+municipality, and that buys an address an officer can navigate by.
+Three things hold the cost to what the feature needs:
+
+- **Coarsened.** Rounded to 4 decimal places (~11 m) before leaving the
+  browser — enough to name a neighbourhood, not a doorway. Full precision
+  stays local and is what gets stored.
+- **Bounded.** One request per detection, 6s deadline, `AbortController`,
+  no retry loop. Previously it had *no* timeout at all, so a third party
+  that accepted the connection and never answered held the whole flow open
+  with the button spinning.
+- **Optional.** A failure returns null, not an error. The report proceeds
+  with a coordinate readout as its address and `isNamedPlace: false`, so
+  the UI asks for a landmark rather than presenting two numbers as a
+  street.
+
+`referrerPolicy: "no-referrer"`, so the provider is not told which
+deployment asked. No API key, so nothing is attributed to an account.
+
+### Maps
+
+- **Tile failure is stated.** Nothing listened for `tileerror`, so an
+  offline device or a blocked tile host produced markers floating in flat
+  grey — indistinguishable from a wrong pin. `BaseTileLayer` reports it
+  after a few failures (one 404 mid-pan is routine) and the fallback shows
+  the coordinates, which is what somebody navigating to the site needs.
+- **Reduced motion is respected.** `flyTo` animates a zoom-and-pan arc,
+  which is exactly the large-area motion `prefers-reduced-motion` exists
+  to suppress. Every `flyTo`, `setView` and `fitBounds` now checks it and
+  arrives at the same place instantly.
+- **No hydration risk.** Leaflet touches `window` at import time, so every
+  map is behind `next/dynamic` with `ssr: false`. Asserted rather than
+  assumed — see the viewport script.
+- **`worldCopyJump={false}`** everywhere, so the map does not repeat
+  sideways and an antimeridian longitude is rare rather than merely
+  handled.
+
+### Data scope
+
+The citizen map shows **only the citizen's own reports** — RLS confines
+`complaints` to the reporter, and no area-scoped public feed exists, so a
+city-wide neighbourhood view is not something the frontend can honestly
+render. It is scoped and labelled rather than filled with plausible
+strangers' reports. The government hotspot map is the city-wide view, and
+says how many work orders have no coordinates instead of quietly dropping
+them.
+
+Details in [supabase/README.md](supabase/README.md#coordinates).
+
+## Notifications
+
+`public.notifications` existed from the initial schema and **nothing ever
+wrote to it**. Both surfaces derived a feed from complaint state instead:
+one entry per report, showing its current status. Real data, but state
+rather than history — a report that passed through triage, assignment,
+work and closure produced a single entry that was overwritten each time,
+so a citizen asked to confirm a repair saw it only if they looked before
+the next transition. Read state lived in a React `Set` and was lost on
+reload.
+
+Now one row per event, written by a database trigger in the same
+transaction as the event itself.
+
+| Event | Recipient |
+|---|---|
+| Report submitted (and therefore created) | The reporting citizen |
+| Triage completed | The citizen |
+| Assigned to a department | The citizen |
+| Accepted, work started, proof submitted | The citizen |
+| Under review, confirmation requested | The citizen |
+| Resolved, reopened, rejected | The citizen |
+| Work order assigned or reassigned | The receiving officer |
+| Work returned for rework | The assigned officer |
+| Anything else | `status_changed`, so a status added later still notifies |
+
+Submission and "successfully created" are one database event — the row
+exists with status `submitted` — so they are one notification. Emitting
+two would mean inventing an event to satisfy a list.
+
+**Officers are not notified about their own actions.** A transition
+notifies the assignee only when somebody else made it, because a tray
+that says "you accepted this" is a tray nobody reads. Government has no
+notification surface of its own in the product, and supervisors and
+administrators reach work orders through the officer workspace, so they
+share that tray rather than getting a route that does not exist.
+
+**Duplicates are structurally impossible.** Every notification carries an
+`event_key` built from the primary key of the audit row that caused it
+plus the recipient, behind a unique index and an `on conflict do nothing`
+insert — so a retried event is a no-op without anybody comparing message
+text.
+
+**Nobody reads or marks anybody else's.** The policies are
+`user_id = auth.uid()` with no staff exemption: an inbox is
+correspondence, not operational data. `emit_notification()` is granted to
+nobody and reachable only from triggers, which closed a real hole — the
+previous insert policy let any staff member write any text into any
+citizen's inbox.
+
+**Refresh, not realtime.** Supabase realtime is in `config.toml` because
+it ships in the default config; nothing in this codebase subscribes to
+anything and no migration adds a publication. A subscription layer for a
+tray would be more machinery than the feature justifies, so refresh is
+explicit: on mount, when the tray opens, when the tab regains focus, and
+after a mutation.
+
+Details in [supabase/README.md](supabase/README.md#notifications).
+
+## Authority analytics
+
+Every figure on a government screen is aggregated in Postgres and read
+through `analyticsService` — no page holds a query, and nothing is derived
+in a render path that the database can compute.
+
+What is worth knowing is what the dashboards used to show.
+
+**Two figures were invented.** A ward with no complaints reported **100%
+SLA compliance** and a health score of `good`, because the database
+coalesced its missing figure to 100 — so the wards a municipality knew
+least about presented as its best performers, and the "wards needing
+attention" list was sorted against a fiction. A department with none
+reported **0%**, which renders as a full red bar. Both are now `null`, the
+type is `number | null`, and the screens say "No data". Zero is a
+measurement; the absence of one is not, and they must not look alike.
+
+**Resolution time was an approximation shown as a measurement.** It
+measured from `complaints.updated_at` — "last touched" — so any later edit
+to a resolved complaint moved it. It now comes from the moment
+`complaint_status_history` recorded the resolution, complaints with no such
+record are excluded rather than guessed at, and every average carries the
+sample it was computed from ("18h across 12 resolved reports").
+
+**"At risk" meant "not yet late".** Every open complaint with a future
+deadline was flagged, so a report filed an hour ago with six days of
+headroom counted. Risk is now a deadline inside a window; what the old
+figure counted is reported separately as "on track".
+
+**The SLA bar's buckets did not sum to the whole.** A complaint resolved
+*after* its deadline belonged to none of them, so the bar under-filled and
+every percentage beside it used the wrong denominator. The five buckets now
+partition every complaint.
+
+| Metric | Source |
+|---|---|
+| Total / new / open / critical complaints | `analytics_summary()` |
+| Resolution rate, average resolution time, SLA compliance | `analytics_summary()`, measured from recorded history |
+| Complaints by status | `analytics_status_distribution()` |
+| Complaints by category | `analytics_category_distribution()` |
+| Complaints by department | `analytics_department_performance()` |
+| Complaints by ward | `analytics_ward_health()` |
+| Priority distribution | `analytics_priority_distribution()` |
+| SLA posture and risk items | `analytics_sla_breakdown()`, `analytics_sla_risk_items()` |
+| Geographic concentration | `analytics_hotspots()` |
+| Active / completed work orders | `analytics_work_orders()` |
+
+**Scoped by RLS, not by a role check.** The functions are `SECURITY
+INVOKER`, so the same `analytics_summary()` call returns the city to an
+administrator and only their own reports to a citizen — which is correct
+behaviour, not a leak. `EXECUTE` is revoked from `PUBLIC`, so an
+unauthenticated caller is refused rather than relying on RLS to hand it
+zeros. A test reads `pg_proc.prosecdef` and fails if any of them ever
+becomes `SECURITY DEFINER`.
+
+**Bounded.** Every list function clamps its own row cap. The queries these
+replaced did not: the hotspot map and the authority queue each selected
+every work order in the city, with its complaint, department and officer
+joined, to count and filter in the browser. Rows are capped now and totals
+come from the aggregates, so a capped page does not mean a capped number.
+
+Details in
+[supabase/README.md](supabase/README.md#analytics).
+
+## The officer work-order lifecycle
+
+A work order is the record of one repair, and its status is a state
+machine enforced by a database trigger — not by the buttons the page
+happens to render.
+
+```
+                    ┌──────────── the assigned officer ────────────┐
+assigned ─→ accepted ─→ in_progress ─→ proof_submitted
+    ↑                        ↑                │
+    │                        │  rework        │  ┌──── oversight ────┐
+    │                     reopened ←──────────┴──┤ supervisor_review │
+    │                                            │        ↓          │
+    └──── reassignment ──────────────────────────┤ citizen_confirm.  │
+         (oversight, unresolved only)            │        ↓          │
+                                                 │     resolved      │
+                                                 └───────────────────┘
+```
+
+**An officer's terminal state is `proof_submitted`.** Sign-off exists
+precisely so that an officer does not declare their own work finished.
+Before this, `assigned → resolved` in one PATCH closed a job nobody had
+visited.
+
+Every mutation validates authentication, role, assignment, and the
+current status; writes audit information; and returns a message written
+to be read. All of it at the database boundary, because the publishable
+key is in every browser and PostgREST accepts a hand-written PATCH:
+
+| Refused | By |
+|---|---|
+| Skipping a stage, or any backwards move except reopening | `work_orders_enforce_transition` |
+| Resolving your own work as an officer | the same, split by `is_oversight()` |
+| Submitting proof with no photograph attached | the same, counting `resolution_proofs` |
+| Advancing an unassigned work order | the same |
+| Backdating `accepted_at` / `started_at` / `completed_at` | the same — server-stamped, and a caller that sends one is refused |
+| Resolving, or even seeing, another officer's work order | the `Work order update access` policy |
+| Reassigning yourself a work order | `work_orders_enforce_authority` |
+| Repointing a work order at another complaint | the same |
+| Proof for a work order that is not yours | the `Assigned officer can add proof` policy |
+| Editing or deleting the audit trail | no INSERT/UPDATE/DELETE policy exists on it |
+
+**The audit trail and the citizen's status are triggers, not follow-up
+statements.** Both used to be application writes, explicitly
+best-effort — so the record of who did what could be missing exactly
+when something had gone wrong, and an officer could see `in_progress`
+while the citizen tracking that report still saw `assigned`. They now
+run in the same transaction as the transition: either all three happen or
+none does. Assignment propagates too, which it never did, so a newly
+assigned report no longer reads "Submitted" indefinitely.
+
+The officer's note travels with the transition into the citizen's
+timeline. `complaint_status_history.note` existed and had never been
+populated, so a citizen could be told "In Progress" but never why.
+
+Details, and what each trigger is compensating for, in
+[supabase/README.md](supabase/README.md#the-work-order-lifecycle).
+
 ## Current state
 
 Officer and government screens read live database state. The completion
@@ -238,11 +522,23 @@ uploads are retryable, and the tracking timeline is built from recorded
 transitions rather than inferred from the current status. See
 [supabase/README.md](supabase/README.md#the-complaint-lifecycle).
 
+The officer path — accept, start, photograph, submit, sign off — is
+complete and enforced at the database boundary. See
+[The officer work-order lifecycle](#the-officer-work-order-lifecycle).
+
+Authority dashboards read live aggregates with no invented figures; see
+[Authority analytics](#authority-analytics).
+
+Notifications are real: one row per lifecycle event, per recipient. See
+[Notifications](#notifications).
+
 Known functional gaps: complaints are not assigned to a ward (the `wards`
-table has no geometry to derive one from), nothing writes to the
-`notifications` table yet — the in-app feed is derived from complaint
-state instead — and there is no UI for a supervisor to record a verdict or
-for a citizen to reject a repair, though the database supports both.
+table has no geometry to derive one from), so ward health is measurable
+only once something sets `ward_id`; a citizen cannot reject a repair
+themselves (a supervisor records that verdict on their behalf); and the
+authority queue lists existing work orders, so a complaint with no work
+order at all is assigned from the work-order page rather than from the
+queue.
 
 ## Naming
 

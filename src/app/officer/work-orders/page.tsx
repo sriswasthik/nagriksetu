@@ -15,7 +15,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { workOrderService } from "@/lib/services/workOrders";
-import { authService } from "@/lib/services/auth";
 import type { WorkOrder } from "@/types/workOrder";
 
 /**
@@ -46,8 +45,12 @@ export default function OfficerWorkOrdersList() {
     setError(null);
 
     try {
-      const user = await authService.getCurrentUser().catch(() => null);
-      const data = await workOrderService.getWorkOrders({ officerId: user?.id });
+      /*
+       * Scoped by the session, not by an id the page looked up: an
+       * undefined officerId used to drop the filter silently, turning
+       * "my work orders" into everything RLS permitted.
+       */
+      const data = await workOrderService.getMyWorkOrders();
       setWorkOrders(data);
     } catch (loadError) {
       console.error("Failed to load work orders", loadError);

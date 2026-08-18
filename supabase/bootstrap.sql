@@ -3034,6 +3034,2356 @@ begin
 end;
 $$;
 
+
+-- ============================================================
+-- FROM 20260816120000_work_order_lifecycle.sql
+-- ============================================================
+
+-- ============================================================
+-- WORK ORDER LIFECYCLE
+-- ============================================================
+--
+-- Row-level security already decides *who* may update a work order:
+-- oversight, or the officer it is assigned to. What nothing decided was
+-- *what* the update may be. Five things were unenforced.
+--
+--
+-- 1. THE STATE MACHINE DID NOT EXIST
+--
+--    work_orders.status is an enum, so Postgres accepted any of its
+--    eight values in place of any other. An assigned officer could
+--    PATCH status straight to 'resolved' — skipping acceptance, the
+--    site visit and the proof a supervisor is meant to verify — or move
+--    a resolved order back to 'assigned', erasing that it was ever
+--    finished. Neither is reachable through the UI, but the UI is not
+--    the boundary: the publishable key is in every browser and
+--    PostgREST accepts a hand-written PATCH.
+--
+--
+-- 2. THE AUDIT TRAIL WAS OPTIONAL
+--
+--    work_order_updates was written by the application, in a separate
+--    statement, deliberately best-effort: "if the audit insert fails the
+--    transition itself still stands". So the record of who changed what
+--    could be missing precisely when something went wrong, and a caller
+--    who simply never issued the second statement left no trace at all.
+--
+--    An audit trail the actor can decline to write is not an audit
+--    trail. It is now a trigger: same transaction as the transition,
+--    actor from auth.uid(), not reachable from any client.
+--
+--
+-- 3. THE CITIZEN'S VIEW COULD GO STALE
+--
+--    The complaint's status was synced by a third application
+--    statement, also best-effort. If it failed, the officer saw
+--    'in_progress' and the citizen tracking that report still saw
+--    'assigned', with nothing to reconcile them and no error either
+--    would ever see. Now a trigger, in the same transaction.
+--
+--
+-- 4. PROOF WAS NOT REQUIRED TO SUBMIT PROOF
+--
+--    'proof_submitted' is the officer's claim that the job is done and
+--    the state a supervisor signs off from. The page required a
+--    photograph before enabling the button; the database required
+--    nothing, so a direct PATCH produced a work order awaiting
+--    verification with nothing to verify.
+--
+--
+-- 5. TIMESTAMPS CAME FROM THE BROWSER
+--
+--    accepted_at, started_at and completed_at were sent by the client.
+--    They are SLA evidence — how long a repair took, whether a target
+--    was met — so a backdated completed_at is a falsified performance
+--    record. They are now stamped by the trigger from the server clock
+--    and rejected from callers.
+--
+-- ============================================================
+
+
+-- ============================================================
+-- 1. THE STATE MACHINE
+-- ============================================================
+--
+-- Split by authority, because the two roles legitimately move a work
+-- order through different parts of it:
+--
+--   THE ASSIGNED OFFICER does the field work.
+--
+--     assigned    -> accepted           acknowledge the assignment
+--     accepted    -> in_progress        on site
+--     in_progress -> proof_submitted    done, with photographs
+--     reopened    -> in_progress        rework after a rejection
+--
+--   OVERSIGHT (supervisor, government_admin) runs sign-off, and can
+--   reassign, which is the one legitimate way back to 'assigned'.
+--
+--     proof_submitted     -> supervisor_review | reopened
+--     supervisor_review   -> citizen_confirmation | reopened
+--     citizen_confirmation-> resolved | reopened
+--     resolved            -> reopened   a rejected repair
+--     anything but resolved -> assigned reassignment
+--
+-- The officer's terminal state is 'proof_submitted', not 'resolved'.
+-- That is the point of having a verification stage: an officer
+-- declaring their own work resolved is the thing sign-off exists to
+-- prevent.
+
+create or replace function public.work_order_transition_allowed(
+  p_from public.work_order_status,
+  p_to public.work_order_status,
+  p_is_oversight boolean
+)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select
+    -- Re-saving the same status is not a transition. Harmless, and the
+    -- trigger short-circuits before ever asking, but an explicit true
+    -- keeps this function total.
+    p_from = p_to
+
+    -- ---------- the officer's path ----------
+    or (p_from, p_to) in (
+      ('assigned',    'accepted'),
+      ('accepted',    'in_progress'),
+      ('in_progress', 'proof_submitted'),
+      ('reopened',    'in_progress')
+    )
+
+    -- ---------- oversight's path ----------
+    or (
+      p_is_oversight
+      and (
+        (p_from, p_to) in (
+          ('proof_submitted',      'supervisor_review'),
+          ('proof_submitted',      'reopened'),
+          ('supervisor_review',    'citizen_confirmation'),
+          ('supervisor_review',    'reopened'),
+          ('citizen_confirmation', 'resolved'),
+          ('citizen_confirmation', 'reopened'),
+          ('resolved',             'reopened')
+        )
+        -- Reassignment. Allowed from anywhere except a closed order,
+        -- because reassigning a resolved job would quietly reopen it
+        -- without recording that the repair was rejected.
+        or (p_to = 'assigned' and p_from <> 'resolved')
+      )
+    );
+$$;
+
+comment on function public.work_order_transition_allowed is
+  'The work-order state machine. Officer path plus, for oversight, sign-off and reassignment.';
+
+
+-- ============================================================
+-- 2. TRANSITION ENFORCEMENT
+-- ============================================================
+-- BEFORE UPDATE, so an invalid transition never reaches the table and
+-- the triggers below never fire on one.
+
+create or replace function public.enforce_work_order_transition()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  is_oversight boolean := public.is_oversight();
+  proof_count integer;
+begin
+
+  -- ----------------------------------------------------------
+  -- Caller-supplied lifecycle timestamps are refused outright.
+  --
+  -- Refused rather than overwritten: silently replacing a value the
+  -- caller sent makes a client that thinks it is recording history look
+  -- like it succeeded. The stamps below are the only source.
+  -- ----------------------------------------------------------
+  if new.accepted_at is distinct from old.accepted_at
+     or new.started_at is distinct from old.started_at
+     or new.completed_at is distinct from old.completed_at then
+    -- The trigger's own stamping happens after this check by assigning
+    -- to NEW below, so this only ever catches a caller.
+    raise exception
+      'Work order timestamps are recorded by the system, not by the caller'
+      using errcode = '42501',
+            hint = 'Send only the new status; accepted_at, started_at and completed_at are stamped server-side.';
+  end if;
+
+  -- ----------------------------------------------------------
+  -- A change of assignee resets the assignment clock.
+  --
+  -- Handled before the status short-circuit below, because oversight
+  -- can hand on a work order that is already in `assigned` — in which
+  -- case the status does not change and nothing further down would run.
+  -- The new officer would otherwise inherit the previous one's
+  -- assigned_at and be measured against their SLA.
+  --
+  -- Whether they are *allowed* to reassign is enforce_work_order_
+  -- authority()'s decision, not this trigger's.
+  -- ----------------------------------------------------------
+  if new.officer_id is distinct from old.officer_id then
+    new.assigned_at := clock_timestamp();
+    new.accepted_at := null;
+    new.started_at := null;
+    new.completed_at := null;
+  end if;
+
+  if new.status is not distinct from old.status then
+    return new;
+  end if;
+
+  -- ----------------------------------------------------------
+  -- An unassigned work order has no lifecycle to advance.
+  --
+  -- RLS already stops an officer here (officer_id = auth.uid() cannot
+  -- hold when officer_id is null), but oversight passes it, and moving
+  -- an unassigned order to 'accepted' records that nobody accepted it.
+  -- ----------------------------------------------------------
+  if new.officer_id is null and new.status <> 'assigned' then
+    raise exception
+      'This work order has no officer assigned'
+      using errcode = '42501',
+            hint = 'Assign an officer before advancing the work order.';
+  end if;
+
+  -- ----------------------------------------------------------
+  -- The machine.
+  -- ----------------------------------------------------------
+  if not public.work_order_transition_allowed(
+       old.status, new.status, is_oversight
+     ) then
+    raise exception
+      'A work order cannot move from % to %', old.status, new.status
+      using errcode = '42501',
+            hint = case
+              when is_oversight then
+                'Valid next steps depend on the current stage; a resolved work order can only be reopened.'
+              else
+                'Accept, then start, then submit proof. Sign-off is a supervisor decision.'
+            end;
+  end if;
+
+  -- ----------------------------------------------------------
+  -- Proof must exist before it can be submitted.
+  --
+  -- Checked here rather than trusted from the UI: the page disables its
+  -- button without a photograph, but a hand-written PATCH does not go
+  -- through the page.
+  -- ----------------------------------------------------------
+  if new.status = 'proof_submitted' then
+    select count(*) into proof_count
+    from public.resolution_proofs
+    where work_order_id = new.id;
+
+    if proof_count = 0 then
+      raise exception
+        'Submit at least one photograph of the completed work first'
+        using errcode = '23514',
+              hint = 'Upload proof of work, then submit for verification.';
+    end if;
+  end if;
+
+  -- ----------------------------------------------------------
+  -- Lifecycle stamps, from the server clock.
+  --
+  -- clock_timestamp(), not now(): now() is transaction-start time, so a
+  -- transition and the audit row it produces would carry identical
+  -- timestamps and a timeline could not order them.
+  -- ----------------------------------------------------------
+  if new.status = 'accepted' then
+    new.accepted_at := clock_timestamp();
+  elsif new.status = 'in_progress' then
+    new.started_at := clock_timestamp();
+  elsif new.status = 'resolved' then
+    new.completed_at := clock_timestamp();
+  elsif new.status = 'assigned' then
+    /*
+     * Back to `assigned` without the assignee changing — oversight
+     * pulling a job back to the top of its own officer's queue. Same
+     * reasoning as the reassignment reset above: acceptance and start
+     * times describe a pass through the work that is being redone, and
+     * leaving them would put an "Accepted" entry on the timeline before
+     * the assignment it belongs to. The audit trail keeps the history;
+     * these four columns describe the current attempt only.
+     */
+    new.assigned_at := clock_timestamp();
+    new.accepted_at := null;
+    new.started_at := null;
+    new.completed_at := null;
+  end if;
+
+  return new;
+
+end;
+$$;
+
+
+drop trigger if exists work_orders_enforce_transition on public.work_orders;
+
+-- Fires before work_orders_enforce_authority (alphabetical order among
+-- BEFORE triggers on the same event: "work_orders_enforce_authority"
+-- sorts before "work_orders_enforce_transition"), so both run and
+-- either can veto. Neither depends on the other's outcome.
+create trigger work_orders_enforce_transition
+before update on public.work_orders
+for each row
+execute function public.enforce_work_order_transition();
+
+
+-- ============================================================
+-- 3. THE AUDIT TRAIL, WRITTEN BY THE DATABASE
+-- ============================================================
+-- AFTER UPDATE: the transition has passed every check by the time it is
+-- recorded, and a statement rolled back later takes its audit row with
+-- it.
+
+create or replace function public.record_work_order_transition()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+begin
+
+  if new.status is not distinct from old.status then
+    return new;
+  end if;
+
+  /*
+   * created_by is NOT NULL, and a transition can legitimately have no
+   * JWT behind it — a migration, or a server task. Attributing those to
+   * the officer would be worse than not recording them, so fall back to
+   * the assignee only when there is genuinely no session, and let the
+   * null case fail loudly rather than inventing an actor.
+   */
+  insert into public.work_order_updates
+    (work_order_id, status, note, created_by)
+  values
+    (
+      new.id,
+      new.status,
+      nullif(
+        current_setting('app.work_order_note', true),
+        ''
+      ),
+      coalesce(actor, new.officer_id)
+    );
+
+  return new;
+
+end;
+$$;
+
+
+drop trigger if exists work_orders_record_transition on public.work_orders;
+
+create trigger work_orders_record_transition
+after update of status on public.work_orders
+for each row
+execute function public.record_work_order_transition();
+
+
+-- ============================================================
+-- 4. THE CITIZEN'S VIEW, KEPT IN STEP
+-- ============================================================
+-- Every work-order status has a complaint status that means the same
+-- thing to the person who filed it. Advancing one without the other is
+-- how a citizen ends up tracking a repair that has already happened.
+--
+-- SECURITY DEFINER because the officer updating the work order has no
+-- policy permitting them to update that citizen's complaint, and should
+-- not: this is the one derived write, and it writes one column.
+
+create or replace function public.sync_complaint_status()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target public.complaint_status;
+begin
+
+  /*
+   * INSERT as well as UPDATE. Creating a work order *is* the assignment,
+   * and it was the one transition nothing propagated: the application
+   * followed its insert with a separate best-effort UPDATE on the
+   * complaint, so a citizen whose report had just been assigned to an
+   * officer could still be looking at "Submitted" with nothing to
+   * reconcile the two.
+   */
+  if tg_op = 'UPDATE' and new.status is not distinct from old.status then
+    return new;
+  end if;
+
+  target := case new.status
+    when 'assigned'             then 'assigned'
+    when 'accepted'             then 'accepted'
+    when 'in_progress'          then 'in_progress'
+    when 'proof_submitted'      then 'proof_submitted'
+    when 'supervisor_review'    then 'supervisor_review'
+    when 'citizen_confirmation' then 'citizen_confirmation'
+    when 'resolved'             then 'resolved'
+    when 'reopened'             then 'reopened'
+  end::public.complaint_status;
+
+  if target is null then
+    return new;
+  end if;
+
+  /*
+   * The complaint's own column trigger, enforce_complaint_authority(),
+   * restricts who may change status. This function runs as the table
+   * owner but auth.uid() is unchanged by SECURITY DEFINER, so the
+   * trigger would judge it as the officer and refuse. The sanctioned
+   * flag is the same mechanism apply_complaint_triage() uses, and is
+   * transaction-local: PostgREST gives every request its own
+   * transaction, and no function granted to `authenticated` sets
+   * arbitrary GUCs, so it cannot be set from outside.
+   */
+  perform set_config('app.sanctioned_triage', 'on', true);
+
+  update public.complaints
+  set status = target
+  where id = new.complaint_id
+    and status is distinct from target;
+
+  perform set_config('app.sanctioned_triage', 'off', true);
+
+  return new;
+
+end;
+$$;
+
+
+drop trigger if exists work_orders_sync_complaint on public.work_orders;
+
+-- `after insert or update of status`: an INSERT has no old row to
+-- compare against, which is why the function branches on tg_op rather
+-- than reading OLD unconditionally.
+create trigger work_orders_sync_complaint
+after insert or update of status on public.work_orders
+for each row
+execute function public.sync_complaint_status();
+
+
+-- ============================================================
+-- 5. THE CALLER-FACING ENTRY POINT
+-- ============================================================
+-- advance_work_order() exists so the client sends an intent — "accept
+-- this", "I have finished" — rather than a row patch, and so the note
+-- accompanying a transition reaches the audit row the trigger writes.
+--
+-- SECURITY INVOKER, deliberately. Every check that matters is a policy
+-- or a trigger, and running as the caller means this function cannot
+-- become a way around them: an officer calling it about someone else's
+-- work order is refused by the same RLS that refuses their PATCH.
+-- Its value is the note, the transaction, and one readable error.
+
+create or replace function public.advance_work_order(
+  p_work_order_id uuid,
+  p_status public.work_order_status,
+  p_note text default null
+)
+returns public.work_orders
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  updated public.work_orders;
+begin
+
+  if p_work_order_id is null then
+    raise exception 'A work order id is required'
+      using errcode = '22004';
+  end if;
+
+  /*
+   * The note travels to the audit trigger through a transaction-local
+   * setting rather than a parameter, because the trigger fires on any
+   * UPDATE — including an oversight reassignment that never goes
+   * through this function — and a parameter it cannot see would make
+   * the note look optional in one path and impossible in another.
+   */
+  perform set_config(
+    'app.work_order_note',
+    coalesce(nullif(btrim(p_note), ''), ''),
+    true
+  );
+
+  update public.work_orders
+  set status = p_status
+  where id = p_work_order_id
+  returning * into updated;
+
+  -- Cleared so a later UPDATE in the same transaction cannot inherit
+  -- this note and attribute it to a different transition.
+  perform set_config('app.work_order_note', '', true);
+
+  /*
+   * No row means the work order does not exist, or the caller cannot
+   * see it. Deliberately one message for both: distinguishing them
+   * would confirm the existence of work orders the caller has no
+   * business knowing about.
+   */
+  if updated.id is null then
+    raise exception
+      'That work order is not available to you'
+      using errcode = '42501',
+            hint = 'It may not exist, or it may be assigned to another officer.';
+  end if;
+
+  return updated;
+
+end;
+$$;
+
+comment on function public.advance_work_order is
+  'Advance a work order and record the transition. Runs as the caller: RLS and the lifecycle triggers remain the authority.';
+
+revoke all on function public.advance_work_order(uuid, public.work_order_status, text) from public;
+grant execute on function public.advance_work_order(uuid, public.work_order_status, text) to authenticated;
+
+revoke all on function public.work_order_transition_allowed(
+  public.work_order_status, public.work_order_status, boolean
+) from public;
+grant execute on function public.work_order_transition_allowed(
+  public.work_order_status, public.work_order_status, boolean
+) to authenticated;
+
+
+-- ============================================================
+-- 6. THE COMPLAINT'S HISTORY CARRIES THE OFFICER'S NOTE
+-- ============================================================
+-- complaint_status_history.note existed and was never populated, so a
+-- citizen's timeline could say "In progress" but never why, even when
+-- the officer had written it down. The note the officer submits with a
+-- transition is the most useful thing the citizen could be told, so it
+-- travels through the same transaction-local setting.
+
+create or replace function public.record_complaint_status()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+
+  if tg_op = 'INSERT' then
+    insert into public.complaint_status_history
+      (complaint_id, status, changed_by)
+    values
+      (new.id, new.status, (select auth.uid()));
+
+    return new;
+  end if;
+
+  if new.status is distinct from old.status then
+    insert into public.complaint_status_history
+      (complaint_id, status, changed_by, note, created_at)
+    values
+      (
+        new.id,
+        new.status,
+        (select auth.uid()),
+        nullif(current_setting('app.work_order_note', true), ''),
+        -- clock_timestamp(), not the column default now(): now() is
+        -- fixed for the transaction, so two transitions in one
+        -- transaction got identical timestamps and a timeline ordered
+        -- them by uuid.
+        clock_timestamp()
+      );
+  end if;
+
+  return new;
+
+end;
+$$;
+
+
+-- ============================================================
+-- 7. STAFF DIRECTORY FOR ASSIGNMENT
+-- ============================================================
+-- The authority queue can assign a complaint to an officer, but had no
+-- way to list officers: profiles are readable, yet a client filtering
+-- on role has to know the enum and sees supervisors and admins too.
+--
+-- SECURITY INVOKER, so the profile read is still the caller's. A
+-- citizen calling this gets whatever the profile policies allow them,
+-- which is their own row and no officers.
+
+create or replace function public.assignable_officers()
+returns table (
+  id uuid,
+  full_name text,
+  open_work_orders bigint
+)
+language sql
+security invoker
+set search_path = ''
+as $$
+  select
+    p.id,
+    p.full_name,
+    count(w.id) filter (
+      where w.status in ('assigned', 'accepted', 'in_progress', 'reopened')
+    ) as open_work_orders
+  from public.profiles p
+  left join public.work_orders w on w.officer_id = p.id
+  where p.role in ('officer', 'supervisor')
+  group by p.id, p.full_name
+  order by open_work_orders asc, p.full_name asc;
+$$;
+
+comment on function public.assignable_officers is
+  'Officers and supervisors with their open work-order counts, for assignment. Runs as the caller.';
+
+revoke all on function public.assignable_officers() from public;
+grant execute on function public.assignable_officers() to authenticated;
+
+
+notify pgrst, 'reload schema';
+
+
+-- ============================================================
+-- FROM 20260817120000_analytics_completeness.sql
+-- ============================================================
+
+-- ============================================================
+-- ANALYTICS: MEASURED, NOT ASSUMED
+-- ============================================================
+--
+-- The analytics_* functions from 20260814120200 replaced src/lib/mock
+-- with real aggregation, which was the important step. This migration
+-- deals with what that left: four metrics the dashboards display that
+-- were never actually measured, four the authority screens ask for that
+-- had no source at all, and one arithmetic bug in the chart.
+--
+--
+-- 1. TWO INVENTED STATISTICS
+--
+--    analytics_ward_health() coalesced sla_compliance to **100** when a
+--    ward had no complaint carrying an SLA deadline. So a ward with no
+--    data reported "100% SLA compliance" and a health score of `good` —
+--    a municipality could read perfect service off a ward nobody had
+--    filed anything in.
+--
+--    analytics_department_performance() coalesced the same figure to
+--    **0**, which the UI renders as a full-width red progress bar. Also
+--    invented, and in the more alarming direction.
+--
+--    Neither number was measured. Both are now null, which the service
+--    and the pages render as "No data" — the honest answer to "what is
+--    the compliance of a ward with nothing to comply with".
+--
+--
+-- 2. RESOLUTION TIME WAS AN APPROXIMATION PRESENTED AS A MEASUREMENT
+--
+--    Both avgResolutionHours and slaCompliance measured from
+--    complaints.updated_at, treating "last touched" as "resolved". Any
+--    later edit to a resolved complaint — a staff note, a triage
+--    correction, an AI re-run — moved its apparent resolution time.
+--
+--    public.complaint_status_history now records the exact moment a
+--    complaint's status became 'resolved', so that is what these use.
+--    Where no such row exists the complaint is *excluded* rather than
+--    approximated, and the sample size is returned alongside the average
+--    so a dashboard can say what the figure is based on. A metric with
+--    no sample is null.
+--
+--
+-- 3. "AT RISK" MEANT "NOT YET LATE"
+--
+--    analytics_sla_breakdown() counted every open complaint with a
+--    future deadline as at-risk, so a report filed an hour ago with six
+--    days of headroom was flagged. Risk now means the deadline is inside
+--    SLA_RISK_WINDOW_HOURS, and `atRisk` keeps its old meaning under the
+--    clearer name `onTrack` so the existing bar still sums.
+--
+--
+-- 4. THE BUCKETS DID NOT SUM TO THE WHOLE
+--
+--    withinSLA / atRisk / breached were not exhaustive. A complaint
+--    resolved *after* its deadline was in none of them: not withinSLA
+--    (it was late), not open (so neither of the other two). Same for a
+--    rejected complaint, and for an open one with no deadline. The
+--    dashboard divides by their sum to size the bar, so the bar
+--    under-filled and every percentage printed beside it was computed
+--    against the wrong denominator.
+--
+--    The buckets are now exhaustive, with `unmeasured` for the rows that
+--    genuinely cannot be judged.
+--
+--
+-- 5. FOUR METRICS WITH NO SOURCE
+--
+--    complaints by status, priority distribution, work-order counts and
+--    geographic concentration were all listed on the authority screens'
+--    remit with nothing behind them. Added below.
+--
+--
+-- SECURITY MODEL — unchanged, and load-bearing
+--
+-- Every function here is SECURITY INVOKER, like the six before them.
+-- They run with the caller's privileges, so the complaint policies
+-- decide what is counted: an administrator aggregates the city, a
+-- citizen aggregates only their own reports. There is no way to use them
+-- to read a row the caller could not already select, which is why they
+-- can safely be granted to `authenticated` rather than gated by role.
+-- ============================================================
+
+
+-- ============================================================
+-- 0. THE RESOLUTION MOMENT
+-- ============================================================
+-- One definition, used by every function below, so two figures on the
+-- same page cannot disagree about when a complaint was resolved.
+--
+-- max(), not min(): a complaint that was resolved, reopened and resolved
+-- again was resolved most recently. Taking the first would report the
+-- rejected repair as the outcome.
+
+create or replace function public.complaint_resolution_times()
+returns table (
+  complaint_id uuid,
+  department_id uuid,
+  ward_id uuid,
+  category public.complaint_category,
+  priority_level public.priority_level,
+  status public.complaint_status,
+  created_at timestamptz,
+  sla_due_at timestamptz,
+  is_resolved boolean,
+  resolved_at timestamptz,
+  resolution_hours numeric,
+  sla_met boolean
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select
+    c.id,
+    c.department_id,
+    c.ward_id,
+    c.category,
+    c.priority_level,
+    c.status,
+    c.created_at,
+    c.sla_due_at,
+
+    /*
+     * Whether the complaint is resolved *now*, which is not the same as
+     * whether it was ever resolved.
+     *
+     * A reopened complaint has a resolution event in its history and is
+     * nonetheless open: the citizen rejected the repair. Without this
+     * distinction it was counted twice — once as "resolved within SLA"
+     * and once as "currently on track" — so the SLA buckets summed to
+     * more than the number of complaints, and a rejected repair still
+     * contributed to the city's average resolution time as though the
+     * job were done.
+     *
+     * Judged by current state. The history keeps the earlier attempt.
+     */
+    (c.status = 'resolved') as is_resolved,
+
+    -- The last resolution event, whatever the current status. Kept
+    -- unconditional because the trend chart plots when resolutions
+    -- happened, and a resolution that later got reopened did happen.
+    r.resolved_at,
+
+    -- Duration only counts for work that is actually finished.
+    case
+      when c.status <> 'resolved' or r.resolved_at is null then null
+      else round(
+        (extract(epoch from (r.resolved_at - c.created_at)) / 3600.0)::numeric,
+        1
+      )
+    end,
+
+    -- Null, not false, when it cannot be judged. `count(*) filter (where
+    -- sla_met)` then counts only the genuinely compliant, and
+    -- `count(sla_met)` gives the denominator that excludes the unknown.
+    case
+      when c.status <> 'resolved'
+        or r.resolved_at is null
+        or c.sla_due_at is null then null
+      else r.resolved_at <= c.sla_due_at
+    end
+  from public.complaints c
+  left join lateral (
+    select max(h.created_at) as resolved_at
+    from public.complaint_status_history h
+    where h.complaint_id = c.id
+      and h.status = 'resolved'
+  ) r on true;
+$$;
+
+comment on function public.complaint_resolution_times is
+  'One row per visible complaint with its measured resolution time, or null where none was recorded. The single definition of "resolved at".';
+
+revoke all on function public.complaint_resolution_times() from public;
+grant execute on function public.complaint_resolution_times() to authenticated;
+
+
+-- ============================================================
+-- 1. HEADLINE SUMMARY — measured
+-- ============================================================
+-- Same keys as before plus three: resolutionRate (the dashboard was
+-- computing it client-side and dividing by zero on an empty database),
+-- and resolutionSampleSize / slaSampleSize so a figure can state what it
+-- is based on rather than implying it covers everything.
+
+create or replace function public.analytics_summary()
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with base as (
+    select * from public.complaint_resolution_times()
+  )
+  select json_build_object(
+    'totalComplaints',   (select count(*) from base),
+
+    'openComplaints',    (
+      select count(*) from base
+      where status not in ('resolved', 'rejected')
+    ),
+
+    'criticalComplaints', (
+      select count(*) from base
+      where priority_level = 'critical'
+        and status not in ('resolved', 'rejected')
+    ),
+
+    'resolvedComplaints', (
+      select count(*) from base where status = 'resolved'
+    ),
+
+    -- Null on an empty database rather than 0: "0% resolved" is a claim
+    -- about performance, and there is nothing to make it about.
+    'resolutionRate', (
+      select case
+        when count(*) = 0 then null
+        else round(100.0 * count(*) filter (where status = 'resolved') / count(*), 1)
+      end
+      from base
+    ),
+
+    /*
+     * Share of judgeable complaints resolved before their deadline.
+     *
+     * count(sla_met) counts non-null only, so complaints with no
+     * deadline and complaints with no recorded resolution are excluded
+     * from both halves — they are unknown, not compliant, and the
+     * previous version's `updated_at <= sla_due_at` quietly counted a
+     * later edit as a late resolution.
+     */
+    'slaCompliance', (
+      select case
+        when count(sla_met) = 0 then null
+        else round(100.0 * count(*) filter (where sla_met) / count(sla_met), 1)
+      end
+      from base
+    ),
+
+    'slaSampleSize', (select count(sla_met) from base),
+
+    'avgResolutionHours', (
+      select case
+        when count(resolution_hours) = 0 then null
+        else round(avg(resolution_hours), 1)
+      end
+      from base
+    ),
+
+    -- How many resolved complaints the average is actually built from.
+    -- Below resolvedComplaints where history predates a resolution.
+    'resolutionSampleSize', (select count(resolution_hours) from base),
+
+    'complaintsToday', (
+      select count(*) from base
+      where created_at >= date_trunc('day', now())
+    ),
+
+    'resolvedToday', (
+      select count(*) from base
+      where is_resolved
+        and resolved_at >= date_trunc('day', now())
+    )
+  );
+$$;
+
+
+-- ============================================================
+-- 2. TREND — resolved by when it was resolved
+-- ============================================================
+-- The `resolved` series was grouped by updated_at::date, so a resolved
+-- complaint edited last week appeared as resolved last week. Grouped by
+-- the recorded resolution date instead.
+
+create or replace function public.analytics_trends(days integer default 30)
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with bounded as (
+    -- Clamped so a caller cannot ask for a decade of daily buckets.
+    select least(greatest(coalesce(days, 30), 1), 365) as n
+  ),
+  span as (
+    select generate_series(
+      date_trunc('day', now()) - ((select n from bounded) - 1) * interval '1 day',
+      date_trunc('day', now()),
+      interval '1 day'
+    )::date as day
+  ),
+  base as (
+    select * from public.complaint_resolution_times()
+  ),
+  reported as (
+    select created_at::date as day, count(*) as n
+    from base
+    where created_at >= (select min(day) from span)
+    group by 1
+  ),
+  resolved as (
+    select resolved_at::date as day, count(*) as n
+    from base
+    where resolved_at is not null
+      and resolved_at >= (select min(day) from span)
+    group by 1
+  )
+  select coalesce(json_agg(
+    json_build_object(
+      'date',       to_char(span.day, 'YYYY-MM-DD'),
+      'complaints', coalesce(reported.n, 0),
+      'resolved',   coalesce(resolved.n, 0)
+    ) order by span.day
+  ), '[]'::json)
+  from span
+  left join reported on reported.day = span.day
+  left join resolved on resolved.day = span.day;
+$$;
+
+
+-- ============================================================
+-- 3. COMPLAINTS BY STATUS
+-- ============================================================
+-- Asked for by the authority overview and previously unavailable, so
+-- the only status breakdown on the dashboard was open-versus-resolved.
+--
+-- Every enum value is listed, including those with no rows: a status
+-- missing from a chart reads as "none of those exist", which is the
+-- same thing as zero only by accident.
+
+create or replace function public.analytics_status_distribution()
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with counted as (
+    select s.status, count(c.id) as n
+    from unnest(enum_range(null::public.complaint_status)) as s(status)
+    left join public.complaints c on c.status = s.status
+    group by s.status
+  ),
+  overall as (
+    select sum(n) as total from counted
+  )
+  select coalesce(json_agg(
+    json_build_object(
+      'status', counted.status::text,
+      'label',  initcap(replace(counted.status::text, '_', ' ')),
+      'count',  counted.n,
+      -- Null rather than 0 when there is nothing to take a share of.
+      'percentage', case
+        when coalesce(overall.total, 0) = 0 then null
+        else round(100.0 * counted.n / overall.total, 1)
+      end
+    ) order by counted.n desc, counted.status
+  ), '[]'::json)
+  from counted, overall;
+$$;
+
+
+-- ============================================================
+-- 4. PRIORITY DISTRIBUTION
+-- ============================================================
+-- Open rows only. A priority mix that counts closed work answers "what
+-- have we historically dealt with", where the dashboard is asking "what
+-- is on our plate" — so both are returned and named.
+
+create or replace function public.analytics_priority_distribution()
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with counted as (
+    select
+      p.level,
+      count(c.id) filter (
+        where c.status not in ('resolved', 'rejected')
+      ) as open_count,
+      count(c.id) as total_count
+    from unnest(enum_range(null::public.priority_level)) as p(level)
+    left join public.complaints c on c.priority_level = p.level
+    group by p.level
+  ),
+  overall as (
+    select
+      sum(open_count) as open_total,
+      sum(total_count) as grand_total
+    from counted
+  )
+  select coalesce(json_agg(
+    json_build_object(
+      'priority', counted.level::text,
+      'label',    initcap(counted.level::text),
+      'open',     counted.open_count,
+      'total',    counted.total_count,
+      'percentageOfOpen', case
+        when coalesce(overall.open_total, 0) = 0 then null
+        else round(100.0 * counted.open_count / overall.open_total, 1)
+      end
+    )
+    -- Severity order, not count order: a priority chart that reorders
+    -- itself as the data shifts cannot be read at a glance.
+    order by array_position(
+      enum_range(null::public.priority_level), counted.level
+    ) desc
+  ), '[]'::json)
+  from counted, overall;
+$$;
+
+
+-- ============================================================
+-- 5. WORK-ORDER COUNTS
+-- ============================================================
+-- The dashboard reported complaint counts only, so the field workload —
+-- what is actually assigned, in flight, or waiting on sign-off — was
+-- invisible to the authority that dispatches it.
+--
+-- Scoped by the work-order read policy, so an officer calling this gets
+-- their own load and oversight gets the city's.
+
+create or replace function public.analytics_work_orders()
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select json_build_object(
+    'total',       count(*),
+    'unassigned',  count(*) filter (where officer_id is null),
+
+    -- Active = an officer is expected to act. Excludes the sign-off
+    -- stages, where the work is done and somebody else is the blocker.
+    'active', count(*) filter (
+      where status in ('assigned', 'accepted', 'in_progress', 'reopened')
+    ),
+
+    'awaitingVerification', count(*) filter (
+      where status in ('proof_submitted', 'supervisor_review', 'citizen_confirmation')
+    ),
+
+    'completed', count(*) filter (where status = 'resolved'),
+
+    -- Reopened at least once: the count that says whether "completed"
+    -- means fixed or merely closed.
+    'reopened', count(*) filter (where status = 'reopened')
+  )
+  from public.work_orders;
+$$;
+
+
+-- ============================================================
+-- 6. GEOGRAPHIC CONCENTRATION
+-- ============================================================
+-- The hotspot map fetched every work order in the city and plotted them
+-- individually, so "where is the pressure concentrated?" was answered by
+-- eye, from a payload that grows without bound.
+--
+-- Concentration is a count per area, so it is counted per area — here,
+-- by snapping coordinates to a grid. Roughly 550 m at this latitude,
+-- which is a neighbourhood rather than a street or a district.
+--
+-- No PostGIS: this needs to run on a stock Supabase project, and a grid
+-- is enough to rank neighbourhoods. It is not a clustering algorithm and
+-- does not pretend to be.
+
+create or replace function public.analytics_hotspots(
+  min_reports integer default 2,
+  max_rows integer default 20
+)
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with bounded as (
+    select
+      greatest(coalesce(min_reports, 2), 1) as floor_n,
+      least(greatest(coalesce(max_rows, 20), 1), 200) as cap
+  ),
+  grid as (
+    select
+      round((c.latitude / 0.005)::numeric) as lat_cell,
+      round((c.longitude / 0.005)::numeric) as lon_cell,
+      count(*) as reports,
+      count(*) filter (
+        where c.status not in ('resolved', 'rejected')
+      ) as open_reports,
+      count(*) filter (
+        where c.priority_level = 'critical'
+          and c.status not in ('resolved', 'rejected')
+      ) as critical_reports,
+      -- Averaged rather than taking the cell centre, so the marker sits
+      -- on the reports instead of on an arbitrary grid intersection.
+      round(avg(c.latitude)::numeric, 6) as latitude,
+      round(avg(c.longitude)::numeric, 6) as longitude,
+      mode() within group (order by c.category) as dominant_category,
+      max(c.created_at) as latest_report
+    from public.complaints c
+    where c.latitude is not null
+      and c.longitude is not null
+      -- Null Island: a lost fix, not a location. Counting it would put
+      -- a permanent hotspot in the Gulf of Guinea.
+      and not (c.latitude = 0 and c.longitude = 0)
+    group by 1, 2
+  )
+  select coalesce(json_agg(ranked), '[]'::json)
+  from (
+    select
+      json_build_object(
+        'latitude',  grid.latitude,
+        'longitude', grid.longitude,
+        'reports',   grid.reports,
+        'openReports', grid.open_reports,
+        'criticalReports', grid.critical_reports,
+        'dominantCategory',
+          initcap(replace(grid.dominant_category::text, '_', ' ')),
+        'latestReport', grid.latest_report
+      ) as ranked
+    from grid, bounded
+    where grid.reports >= bounded.floor_n
+    order by grid.open_reports desc, grid.reports desc
+    limit (select cap from bounded)
+  ) top_cells;
+$$;
+
+
+-- ============================================================
+-- 7. DEPARTMENT PERFORMANCE — measured
+-- ============================================================
+
+create or replace function public.analytics_department_performance()
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with base as (
+    select * from public.complaint_resolution_times()
+  )
+  select coalesce(json_agg(
+    json_build_object(
+      'department', d.name,
+      'total',      stats.total,
+      'open',       stats.open_count,
+      'resolved',   stats.resolved_count,
+      'critical',   stats.critical_count,
+      -- Null, not 0. A department with nothing to comply with has no
+      -- compliance figure, and 0 renders as a full red bar.
+      'slaCompliance',      stats.sla_compliance,
+      'slaSampleSize',      stats.sla_sample,
+      'avgResolutionHours', stats.avg_hours,
+      'resolutionSampleSize', stats.resolution_sample
+    ) order by stats.open_count desc, d.name
+  ), '[]'::json)
+  from public.departments d
+  cross join lateral (
+    select
+      count(*) as total,
+      count(*) filter (
+        where b.status not in ('resolved', 'rejected')
+      ) as open_count,
+      count(*) filter (where b.status = 'resolved') as resolved_count,
+      count(*) filter (
+        where b.priority_level = 'critical'
+          and b.status not in ('resolved', 'rejected')
+      ) as critical_count,
+      case
+        when count(b.sla_met) = 0 then null
+        else round(
+          100.0 * count(*) filter (where b.sla_met) / count(b.sla_met), 1
+        )
+      end as sla_compliance,
+      count(b.sla_met) as sla_sample,
+      case
+        when count(b.resolution_hours) = 0 then null
+        else round(avg(b.resolution_hours), 1)
+      end as avg_hours,
+      count(b.resolution_hours) as resolution_sample
+    from base b
+    where b.department_id = d.id
+  ) stats;
+$$;
+
+
+-- ============================================================
+-- 8. WARD HEALTH — measured
+-- ============================================================
+-- healthScore keeps its four buckets so the existing badges still
+-- render, but gains a fifth state for the case the old version hid:
+-- `unknown`, where there is nothing to score. That case used to be
+-- reported as `good` on the back of an invented 100% compliance.
+
+create or replace function public.analytics_ward_health()
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with base as (
+    select * from public.complaint_resolution_times()
+  )
+  select coalesce(json_agg(
+    json_build_object(
+      'ward',            w.name,
+      'openComplaints',  stats.open_count,
+      'critical',        stats.critical_count,
+      'resolved',        stats.resolved_count,
+      'total',           stats.total,
+      'slaCompliance',   stats.sla_compliance,
+      'slaSampleSize',   stats.sla_sample,
+      'avgResolutionHours', stats.avg_hours,
+      'resolutionSampleSize', stats.resolution_sample,
+      'healthScore', case
+        -- Nothing measured. Said so, rather than scored as healthy.
+        when stats.sla_compliance is null then 'unknown'
+        when stats.critical_count > 0 and stats.sla_compliance < 50 then 'critical'
+        when stats.sla_compliance < 60 then 'poor'
+        when stats.sla_compliance < 85 then 'moderate'
+        else 'good'
+      end
+    )
+    -- Unscored wards last: they are not the worst performers, they are
+    -- the ones there is nothing to say about.
+    order by stats.sla_compliance nulls last, w.name
+  ), '[]'::json)
+  from public.wards w
+  cross join lateral (
+    select
+      count(*) as total,
+      count(*) filter (
+        where b.status not in ('resolved', 'rejected')
+      ) as open_count,
+      count(*) filter (
+        where b.priority_level = 'critical'
+          and b.status not in ('resolved', 'rejected')
+      ) as critical_count,
+      count(*) filter (where b.status = 'resolved') as resolved_count,
+      case
+        when count(b.sla_met) = 0 then null
+        else round(
+          100.0 * count(*) filter (where b.sla_met) / count(b.sla_met), 1
+        )
+      end as sla_compliance,
+      count(b.sla_met) as sla_sample,
+      case
+        when count(b.resolution_hours) = 0 then null
+        else round(avg(b.resolution_hours), 1)
+      end as avg_hours,
+      count(b.resolution_hours) as resolution_sample
+    from base b
+    where b.ward_id = w.id
+  ) stats;
+$$;
+
+
+-- ============================================================
+-- 9. SLA POSTURE — exhaustive, and risk that means risk
+-- ============================================================
+-- The four buckets partition every visible complaint, so the dashboard's
+-- stacked bar sums to the whole and the percentages beside it are
+-- computed against the right denominator.
+--
+-- `atRisk` is the metric the authority screens ask for: open, with a
+-- deadline inside the risk window. `onTrack` is what the old `atRisk`
+-- actually counted.
+
+create or replace function public.analytics_sla_breakdown(
+  risk_window_hours integer default 24
+)
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with bounded as (
+    select least(greatest(coalesce(risk_window_hours, 24), 1), 720) as w
+  ),
+  base as (
+    select * from public.complaint_resolution_times()
+  )
+  select json_build_object(
+    /*
+     * Keyed on the current status first, so every complaint lands in
+     * exactly one bucket.
+     *
+     * sla_met is already null unless the complaint is resolved now — a
+     * reopened one is judged as open, not credited with the resolution
+     * its reporter rejected.
+     */
+    'withinSLA', count(*) filter (where b.sla_met),
+
+    -- Resolved late, or open and already past the deadline. The old
+    -- version counted only the second, so a late resolution vanished
+    -- from the chart entirely.
+    'breached', count(*) filter (
+      where b.sla_met = false
+        or (
+          b.status not in ('resolved', 'rejected')
+          and b.sla_due_at is not null
+          and b.sla_due_at <= now()
+        )
+    ),
+
+    'atRisk', count(*) filter (
+      where b.status not in ('resolved', 'rejected')
+        and b.sla_due_at is not null
+        and b.sla_due_at > now()
+        and b.sla_due_at <= now() + ((select w from bounded) || ' hours')::interval
+    ),
+
+    'onTrack', count(*) filter (
+      where b.status not in ('resolved', 'rejected')
+        and b.sla_due_at is not null
+        and b.sla_due_at > now() + ((select w from bounded) || ' hours')::interval
+    ),
+
+    /*
+     * Everything the other four cannot judge: no deadline recorded,
+     * rejected, or resolved with no recorded resolution moment. Counted
+     * and named rather than dropped, because dropping them is what made
+     * the bar under-fill.
+     */
+    'unmeasured', count(*) filter (
+      where b.sla_met is null
+        and not (
+          b.status not in ('resolved', 'rejected')
+          and b.sla_due_at is not null
+        )
+    ),
+
+    'riskWindowHours', (select w from bounded)
+  )
+  from base b;
+$$;
+
+
+-- ============================================================
+-- 10. SLA-RISK ITEMS
+-- ============================================================
+-- The count above says how many; this says which, so the authority can
+-- act on them. Bounded and ordered by urgency, because an unbounded
+-- "everything at risk" list is the query this is meant to replace.
+
+create or replace function public.analytics_sla_risk_items(
+  risk_window_hours integer default 24,
+  max_rows integer default 25
+)
+returns json
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with bounded as (
+    select
+      least(greatest(coalesce(risk_window_hours, 24), 1), 720) as w,
+      least(greatest(coalesce(max_rows, 25), 1), 100) as cap
+  )
+  select coalesce(json_agg(item order by hours_remaining), '[]'::json)
+  from (
+    select
+      json_build_object(
+        'complaintId',     c.id,
+        'complaintNumber', c.complaint_number,
+        'title',           c.title,
+        'status',          c.status::text,
+        'priorityLevel',   c.priority_level::text,
+        'department',      d.name,
+        'slaDueAt',        c.sla_due_at,
+        'hoursRemaining',  round(
+          (extract(epoch from (c.sla_due_at - now())) / 3600.0)::numeric, 1
+        ),
+        'officerName',     p.full_name
+      ) as item,
+      c.sla_due_at as hours_remaining
+    from public.complaints c
+    left join public.departments d on d.id = c.department_id
+    left join public.work_orders w on w.complaint_id = c.id
+    left join public.profiles p on p.id = w.officer_id
+    cross join bounded
+    where c.status not in ('resolved', 'rejected')
+      and c.sla_due_at is not null
+      -- Breached rows included: they are the most at risk, not past
+      -- caring about, and an authority list that hides them is useless.
+      and c.sla_due_at <= now() + (bounded.w || ' hours')::interval
+    order by c.sla_due_at
+    limit (select cap from bounded)
+  ) ranked;
+$$;
+
+
+-- ============================================================
+-- 11. GRANTS
+-- ============================================================
+-- WHAT ENFORCES WHAT, AND IN WHICH ORDER
+--
+-- Every function here is SECURITY INVOKER, so the policies on the
+-- underlying tables are the real boundary: a citizen calling
+-- analytics_summary() aggregates their own complaints and nothing else,
+-- and there is no argument they can pass to change that. That is the
+-- check that matters, and it is deliberately *not* replaced by a role
+-- test — a citizen reading a one-row summary of their own reports is
+-- correct behaviour, not a leak to be blocked.
+--
+-- The grants are the second layer, for the caller RLS has nothing to say
+-- about.
+--
+-- REVOKING FROM PUBLIC IS NOT COSMETIC
+--
+-- PostgreSQL grants EXECUTE on a new function to PUBLIC by default, so
+-- the earlier `grant ... to authenticated` lines were redundant and an
+-- anonymous caller could execute all six. It returned zeros, because RLS
+-- showed it no rows — correct by consequence rather than by intent, and
+-- it meant a future policy mistake would have surfaced as a silent data
+-- leak to unauthenticated callers rather than as a denial.
+--
+-- Revoked from PUBLIC and granted to `authenticated` only, including for
+-- the six pre-existing functions. An anonymous caller is now refused at
+-- the entry point instead of tripping over an internal helper it also
+-- cannot execute, which is a clearer failure for an operator to read.
+
+revoke all on function public.analytics_summary() from public;
+grant execute on function public.analytics_summary() to authenticated;
+
+revoke all on function public.analytics_trends(integer) from public;
+grant execute on function public.analytics_trends(integer) to authenticated;
+
+revoke all on function public.analytics_category_distribution() from public;
+grant execute on function public.analytics_category_distribution() to authenticated;
+
+revoke all on function public.analytics_department_performance() from public;
+grant execute on function public.analytics_department_performance() to authenticated;
+
+revoke all on function public.analytics_ward_health() from public;
+grant execute on function public.analytics_ward_health() to authenticated;
+
+-- Signature changed (gained a parameter), so the old one is dropped
+-- rather than left callable with the previous meaning of `atRisk`.
+drop function if exists public.analytics_sla_breakdown();
+revoke all on function public.analytics_sla_breakdown(integer) from public;
+grant execute on function public.analytics_sla_breakdown(integer) to authenticated;
+
+revoke all on function public.analytics_status_distribution() from public;
+grant execute on function public.analytics_status_distribution() to authenticated;
+
+revoke all on function public.analytics_priority_distribution() from public;
+grant execute on function public.analytics_priority_distribution() to authenticated;
+
+revoke all on function public.analytics_work_orders() from public;
+grant execute on function public.analytics_work_orders() to authenticated;
+
+revoke all on function public.analytics_hotspots(integer, integer) from public;
+grant execute on function public.analytics_hotspots(integer, integer) to authenticated;
+
+revoke all on function public.analytics_sla_risk_items(integer, integer) from public;
+grant execute on function public.analytics_sla_risk_items(integer, integer) to authenticated;
+
+
+notify pgrst, 'reload schema';
+
+
+-- ============================================================
+-- FROM 20260817130000_notification_lifecycle.sql
+-- ============================================================
+
+-- ============================================================
+-- NOTIFICATIONS
+-- ============================================================
+--
+-- public.notifications has existed since the initial schema, with
+-- per-recipient RLS policies added in 20260814120000. Nothing has ever
+-- written a row to it.
+--
+-- So both notification surfaces derived a feed from complaint state
+-- instead: one entry per complaint showing its *current* status. That is
+-- honest as far as it goes — every entry was a real report in a real
+-- state — but it is not a notification feed, for three reasons:
+--
+--   * It shows state, not events. A complaint that was assigned, worked
+--     and resolved produced one entry, replaced each time. The citizen
+--     could never see that they had been asked to confirm a repair
+--     unless they happened to look while that was the current status.
+--   * Read state lived in a React Set, so it was lost on reload and was
+--     never the same in two tabs. The page said so in a comment.
+--   * An officer got nothing at all. The tray returned early on any
+--     non-citizen route.
+--
+-- This migration makes the events write rows.
+--
+--
+-- WHY TRIGGERS AND NOT THE APPLICATION
+--
+-- Every event the product wants to notify about already fires a database
+-- trigger, because the previous tasks moved the lifecycle there:
+-- complaint_status_history records one row per real complaint
+-- transition, and work_order_updates one per work-order transition, both
+-- append-only and both written in the same transaction as the change.
+--
+-- Notifying from the application would mean a second statement that can
+-- fail on its own, and the officer lifecycle work already established
+-- what that produces: an audit trail that was missing exactly when
+-- something went wrong. A notification nobody receives because the
+-- browser closed mid-request is the same failure.
+--
+--
+-- DEDUPLICATION IS STRUCTURAL, NOT A CHECK
+--
+-- The requirement is that retrying an event does not produce a second
+-- notification. Rather than comparing message text or timestamps, every
+-- notification carries an `event_key` derived from the primary key of
+-- the audit row that caused it, plus the recipient:
+--
+--   csh:<complaint_status_history.id>:<user_id>
+--   wou:<work_order_updates.id>:<user_id>
+--
+-- A unique index makes a duplicate impossible rather than unlikely.
+-- Those audit rows are themselves one-per-real-transition — an UPDATE
+-- that sets a status to the value it already holds is not `distinct
+-- from` its old value, so no history row is written and no notification
+-- follows.
+-- ============================================================
+
+
+-- ============================================================
+-- 1. THE EVENT TYPES
+-- ============================================================
+-- An enum, not free text. `type` was `text`, so a typo in one call site
+-- produced a category no reader would ever match on and nothing would
+-- report the mistake.
+--
+-- These are the events the product notifies about. Note what is *not*
+-- separate: "complaint submitted" and "complaint successfully created"
+-- are one database event — the row exists with status `submitted` — so
+-- they are one notification. Emitting two would be inventing an event to
+-- satisfy a list.
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'notification_type') then
+    create type public.notification_type as enum (
+      'complaint_submitted',
+      'complaint_triaged',
+      'complaint_assigned',
+      'work_accepted',
+      'work_started',
+      'proof_submitted',
+      'complaint_under_review',
+      'confirmation_requested',
+      'complaint_resolved',
+      'complaint_reopened',
+      'complaint_rejected',
+      -- Officer-facing: a work order arriving, or coming back.
+      'work_order_assigned',
+      'work_order_reopened',
+      -- Any transition the list above does not name. Better than
+      -- silently dropping a status somebody adds to the enum later.
+      'status_changed'
+    );
+  end if;
+end
+$$;
+
+
+-- ============================================================
+-- 2. COLUMNS THE FEED NEEDS
+-- ============================================================
+-- The table held user_id, title, message, type, is_read, created_at. A
+-- notification with no reference to what it is about cannot be linked
+-- to, which is most of what a reader wants to do with one.
+
+alter table public.notifications
+  add column if not exists complaint_id uuid
+    references public.complaints(id) on delete cascade;
+
+alter table public.notifications
+  add column if not exists work_order_id uuid
+    references public.work_orders(id) on delete cascade;
+
+-- Nullable: a notification from before this migration has no key, and
+-- backfilling an invented one would defeat the point of the index.
+alter table public.notifications
+  add column if not exists event_key text;
+
+-- is_read stays — it is what the policies and the UI use. read_at says
+-- *when*, which "mark all as read" makes worth recording.
+alter table public.notifications
+  add column if not exists read_at timestamptz;
+
+
+-- Retype `type` from text to the enum. Existing values are mapped where
+-- they match a member and dropped to 'status_changed' otherwise; there
+-- are no rows in practice, but a deployment that has been written to by
+-- hand should not fail to migrate.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'notifications'
+      and column_name = 'type'
+      and data_type = 'text'
+  ) then
+    /*
+     * enum_range() cast to text[] rather than a subquery: a USING
+     * expression cannot contain one ("cannot use subquery in transform
+     * expression"), and hardcoding the member list here would be a
+     * second copy of the enum to keep in step.
+     */
+    alter table public.notifications
+      alter column type type public.notification_type
+      using (
+        case
+          when type = any (
+            enum_range(null::public.notification_type)::text[]
+          )
+          then type::public.notification_type
+          else 'status_changed'::public.notification_type
+        end
+      );
+  end if;
+end
+$$;
+
+alter table public.notifications
+  alter column type set default 'status_changed';
+
+alter table public.notifications
+  alter column type set not null;
+
+
+-- ============================================================
+-- 3. THE DEDUPLICATION INDEX
+-- ============================================================
+-- Partial, so the pre-existing rows with no key do not collide with each
+-- other. This is what makes a retried event a no-op rather than a second
+-- entry in somebody's inbox.
+
+create unique index if not exists notifications_event_key_idx
+  on public.notifications(event_key)
+  where event_key is not null;
+
+-- The unread count and the feed are the only two reads, and both are
+-- per-recipient and newest-first.
+create index if not exists notifications_user_unread_idx
+  on public.notifications(user_id, is_read, created_at desc);
+
+
+-- ============================================================
+-- 4. WRITING A NOTIFICATION
+-- ============================================================
+-- One place, so the dedupe rule cannot be applied inconsistently.
+--
+-- SECURITY DEFINER because the caller is a trigger running as whoever
+-- made the change: an officer advancing a work order has no policy
+-- allowing them to insert a row addressed to the citizen, and should not
+-- have one. The function accepts a recipient rather than deriving it,
+-- and its callers are triggers only — it is not granted to
+-- `authenticated`, so nothing client-side can address a notification to
+-- another user.
+
+create or replace function public.emit_notification(
+  p_user_id uuid,
+  p_type public.notification_type,
+  p_title text,
+  p_message text,
+  p_event_key text,
+  p_complaint_id uuid default null,
+  p_work_order_id uuid default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+
+  -- No recipient, no notification. Happens legitimately: an unassigned
+  -- work order has no officer to tell.
+  if p_user_id is null then
+    return;
+  end if;
+
+  insert into public.notifications
+    (user_id, type, title, message, event_key, complaint_id, work_order_id)
+  values
+    (p_user_id, p_type, p_title, p_message, p_event_key,
+     p_complaint_id, p_work_order_id)
+  /*
+   * The whole dedupe mechanism. A retried event carries the same
+   * event_key and lands here as a no-op, so an at-least-once caller
+   * behaves as exactly-once without anybody comparing message strings.
+   */
+  on conflict (event_key) where event_key is not null do nothing;
+
+end;
+$$;
+
+revoke all on function public.emit_notification(
+  uuid, public.notification_type, text, text, text, uuid, uuid
+) from public;
+
+
+-- ============================================================
+-- 5. COMPLAINT EVENTS -> THE REPORTING CITIZEN
+-- ============================================================
+-- Fires off complaint_status_history, which is the append-only record of
+-- one row per real transition. Using it rather than the complaints table
+-- means the notification and the timeline entry cannot disagree, and the
+-- history row's id is the natural dedupe key.
+
+create or replace function public.notify_complaint_status()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_complaint public.complaints;
+  event_type public.notification_type;
+  headline text;
+  body text;
+begin
+
+  select * into target_complaint
+  from public.complaints
+  where id = new.complaint_id;
+
+  if target_complaint.id is null then
+    return new;
+  end if;
+
+  /*
+   * Statuses map to the labels the citizen already sees on their
+   * timeline, so a notification and the page it links to say the same
+   * thing. `status_changed` is the fallback rather than an error: a
+   * status added to the enum later should still notify, just generically.
+   */
+  case new.status
+    when 'submitted' then
+      event_type := 'complaint_submitted';
+      headline   := 'Report received';
+      body       := 'Your report has been logged as '
+                    || coalesce(target_complaint.complaint_number, 'a new report')
+                    || '.';
+    when 'ai_analyzed' then
+      event_type := 'complaint_triaged';
+      headline   := 'Report triaged';
+      body       := 'Your report has been categorised and prioritised for the responsible department.';
+    when 'assigned' then
+      event_type := 'complaint_assigned';
+      headline   := 'Assigned to a department';
+      body       := 'Your report has been routed to the department that will carry out the work.';
+    when 'accepted' then
+      event_type := 'work_accepted';
+      headline   := 'Accepted by an officer';
+      body       := 'A field officer has accepted your report and will attend to it.';
+    when 'in_progress' then
+      event_type := 'work_started';
+      headline   := 'Work has started';
+      body       := 'An officer is working on your report on site.';
+    when 'proof_submitted' then
+      event_type := 'proof_submitted';
+      headline   := 'Repair submitted for verification';
+      body       := 'The officer has submitted photographs of the completed work.';
+    when 'supervisor_review' then
+      event_type := 'complaint_under_review';
+      headline   := 'Under supervisor review';
+      body       := 'A supervisor is verifying the completed work.';
+    when 'citizen_confirmation' then
+      event_type := 'confirmation_requested';
+      headline   := 'Please confirm the repair';
+      body       := 'The work is reported complete. Let us know whether the issue is resolved.';
+    when 'resolved' then
+      event_type := 'complaint_resolved';
+      headline   := 'Report resolved';
+      body       := 'Your report has been marked resolved.';
+    when 'reopened' then
+      event_type := 'complaint_reopened';
+      headline   := 'Report reopened';
+      body       := 'Your report is active again and back with the department.';
+    when 'rejected' then
+      event_type := 'complaint_rejected';
+      headline   := 'Report closed without action';
+      body       := 'This report could not be actioned. Open it to see why.';
+    else
+      event_type := 'status_changed';
+      headline   := 'Report updated';
+      body       := 'The status of your report has changed.';
+  end case;
+
+  /*
+   * The note the officer wrote, where there is one, in place of the
+   * generic sentence. It is the only line about this citizen's specific
+   * issue rather than about the process, and it already reaches their
+   * timeline through the same column.
+   */
+  if new.note is not null and btrim(new.note) <> '' then
+    body := btrim(new.note);
+  end if;
+
+  perform public.emit_notification(
+    target_complaint.citizen_id,
+    event_type,
+    headline,
+    -- Prefixed with the report's own title so a tray entry is
+    -- identifiable without opening it.
+    coalesce(target_complaint.title, 'Your report') || ' — ' || body,
+    'csh:' || new.id::text || ':' || target_complaint.citizen_id::text,
+    target_complaint.id,
+    null
+  );
+
+  return new;
+
+end;
+$$;
+
+
+drop trigger if exists complaint_status_notify on public.complaint_status_history;
+
+-- AFTER INSERT on the history table, not on complaints: the history row
+-- must exist for its id to be the dedupe key, and a transition rolled
+-- back by a later constraint takes its notification with it.
+create trigger complaint_status_notify
+after insert on public.complaint_status_history
+for each row
+execute function public.notify_complaint_status();
+
+
+-- ============================================================
+-- 6. WORK-ORDER EVENTS -> THE ASSIGNED OFFICER
+-- ============================================================
+-- The officer surface had nothing. What an officer needs to be told is
+-- narrow: a job has arrived, or a job has come back.
+--
+-- Deliberately NOT every transition. An officer who just pressed
+-- "Accept" does not need to be notified that they accepted something,
+-- and a tray full of one's own actions is a tray nobody reads. So a
+-- transition notifies the officer only when somebody else made it.
+
+create or replace function public.notify_work_order_transition()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_order public.work_orders;
+  complaint_title text;
+  event_type public.notification_type;
+  headline text;
+  body text;
+begin
+
+  select * into target_order
+  from public.work_orders
+  where id = new.work_order_id;
+
+  if target_order.id is null or target_order.officer_id is null then
+    return new;
+  end if;
+
+  -- The officer's own action. Nothing to tell them.
+  if new.created_by = target_order.officer_id then
+    return new;
+  end if;
+
+  select c.title into complaint_title
+  from public.complaints c
+  where c.id = target_order.complaint_id;
+
+  case new.status
+    when 'assigned' then
+      event_type := 'work_order_assigned';
+      headline   := 'New work order assigned';
+      body       := 'A work order has been assigned to you.';
+    when 'reopened' then
+      event_type := 'work_order_reopened';
+      headline   := 'Work returned for rework';
+      body       := 'The repair was not accepted. This work order is back with you.';
+    else
+      -- A supervisor moving a job through sign-off is not something the
+      -- officer has to act on, so it is recorded generically rather than
+      -- dressed up as a task.
+      event_type := 'status_changed';
+      headline   := 'Work order updated';
+      body       := 'The status of one of your work orders has changed.';
+  end case;
+
+  if new.note is not null and btrim(new.note) <> '' then
+    body := btrim(new.note);
+  end if;
+
+  perform public.emit_notification(
+    target_order.officer_id,
+    event_type,
+    headline,
+    coalesce(complaint_title, 'A work order') || ' — ' || body,
+    'wou:' || new.id::text || ':' || target_order.officer_id::text,
+    target_order.complaint_id,
+    target_order.id
+  );
+
+  return new;
+
+end;
+$$;
+
+
+drop trigger if exists work_order_update_notify on public.work_order_updates;
+
+create trigger work_order_update_notify
+after insert on public.work_order_updates
+for each row
+execute function public.notify_work_order_transition();
+
+
+-- ============================================================
+-- 7. ASSIGNMENT AND REASSIGNMENT -> THE NEW OFFICER
+-- ============================================================
+-- Creating a work order writes no work_order_updates row — the audit
+-- trigger fires on transitions, and an insert is not one — so without
+-- this an officer would never be told about the assignment that gave
+-- them the job. Reassignment has the same gap: officer_id changes
+-- without the status necessarily changing.
+
+create or replace function public.notify_work_order_assignment()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  complaint_title text;
+begin
+
+  if new.officer_id is null then
+    return new;
+  end if;
+
+  -- On update, only a genuine change of assignee counts.
+  if tg_op = 'UPDATE'
+     and new.officer_id is not distinct from old.officer_id then
+    return new;
+  end if;
+
+  -- Oversight assigning a job to themselves needs no announcement.
+  if new.officer_id = (select auth.uid()) then
+    return new;
+  end if;
+
+  select c.title into complaint_title
+  from public.complaints c
+  where c.id = new.complaint_id;
+
+  perform public.emit_notification(
+    new.officer_id,
+    'work_order_assigned',
+    'New work order assigned',
+    coalesce(complaint_title, 'A work order')
+      || ' — assigned to you as '
+      || coalesce(new.work_order_number, 'a new work order') || '.',
+    /*
+     * Keyed on the work order and the officer rather than on an audit
+     * row, because an assignment has no audit row of its own. The
+     * consequence is deliberate: reassigning the same job back to the
+     * same officer later does not notify them twice, which is the
+     * behaviour worth having — one "this is yours" per officer per job.
+     */
+    'woassign:' || new.id::text || ':' || new.officer_id::text,
+    new.complaint_id,
+    new.id
+  );
+
+  return new;
+
+end;
+$$;
+
+
+drop trigger if exists work_order_assignment_notify on public.work_orders;
+
+create trigger work_order_assignment_notify
+after insert or update of officer_id on public.work_orders
+for each row
+execute function public.notify_work_order_assignment();
+
+
+-- ============================================================
+-- 8. READING AND MARKING
+-- ============================================================
+-- SECURITY INVOKER, all of them. The per-recipient policies are the
+-- boundary — "Users read own notifications" and "Users update own
+-- notifications" both test user_id = auth.uid() — so a function running
+-- as the caller cannot be used to reach another user's inbox no matter
+-- what it is passed. A SECURITY DEFINER version would have to
+-- re-implement that check, and a re-implementation is a second place to
+-- get it wrong.
+
+create or replace function public.unread_notification_count()
+returns integer
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select count(*)::integer
+  from public.notifications
+  where user_id = (select auth.uid())
+    and not is_read;
+$$;
+
+comment on function public.unread_notification_count is
+  'Unread notifications for the caller. Counted in Postgres rather than by fetching the feed to measure it.';
+
+revoke all on function public.unread_notification_count() from public;
+grant execute on function public.unread_notification_count() to authenticated;
+
+
+/**
+ * Marks a set of notifications read, or all of them.
+ *
+ * Returns the number actually marked, so a caller can tell "already
+ * read" from "not yours" — both leave the row untouched, and the count
+ * is the honest answer to what happened.
+ */
+create or replace function public.mark_notifications_read(
+  p_ids uuid[] default null
+)
+returns integer
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  affected integer;
+begin
+
+  update public.notifications
+  set is_read = true,
+      read_at = clock_timestamp()
+  where user_id = (select auth.uid())
+    and not is_read
+    -- Null means "all of mine". An explicit list narrows it; the
+    -- user_id predicate still applies, so a caller passing somebody
+    -- else's id changes nothing.
+    and (p_ids is null or id = any (p_ids));
+
+  get diagnostics affected = row_count;
+
+  return affected;
+
+end;
+$$;
+
+comment on function public.mark_notifications_read is
+  'Marks the caller''s notifications read. Null marks all. Runs as the caller, so RLS confines it to their own.';
+
+revoke all on function public.mark_notifications_read(uuid[]) from public;
+grant execute on function public.mark_notifications_read(uuid[]) to authenticated;
+
+
+-- ============================================================
+-- 9. THE INSERT POLICY NARROWS
+-- ============================================================
+-- "Staff can create notifications" allowed any staff member to insert a
+-- row addressed to anybody:
+--
+--   with check (public.is_staff() or user_id = auth.uid())
+--
+-- Which means an officer could write a notification into any citizen's
+-- inbox, with any text. Nothing in the product did it, and now nothing
+-- needs to: every notification comes from a trigger via
+-- emit_notification(), which is SECURITY DEFINER and not granted to
+-- `authenticated`.
+--
+-- So the policy is replaced with self-insert only. A client can still
+-- write itself a note if some future feature wants one; it can no longer
+-- write to a stranger.
+
+drop policy if exists "Staff can create notifications" on public.notifications;
+
+-- Dropped by its own name too, not only by the old one. Without this the
+-- migration applies once and fails on a re-run with "policy already
+-- exists" — which supabase/bootstrap.sql does by design, since it is a
+-- paste-in file that has to be safe to run repeatedly. Caught by
+-- verify-bootstrap.sh's second pass.
+drop policy if exists "Users create only their own notifications"
+  on public.notifications;
+
+create policy "Users create only their own notifications"
+on public.notifications
+for insert
+to authenticated
+with check (
+  user_id = (select auth.uid())
+);
+
+
+-- Recipients mark their own notifications read; nobody deletes them.
+-- There is deliberately no DELETE policy: an inbox its sender can empty
+-- is not a record of what the citizen was told.
+
+
+notify pgrst, 'reload schema';
+
+
+-- ============================================================
+-- FROM 20260817140000_coordinate_integrity.sql
+-- ============================================================
+
+-- ============================================================
+-- COORDINATE INTEGRITY
+-- ============================================================
+--
+-- `submit_complaint()` validates latitude and longitude — range, finite,
+-- and not 0,0 — and has since 20260814120800. But it is a function, and
+-- a function only validates what goes through it.
+--
+-- Two paths do not:
+--
+--   * `submitThroughInsert()` in services/complaints.ts, the documented
+--     fallback for a deployment whose migrations are behind. It writes to
+--     public.complaints directly.
+--
+--   * Any hand-written PostgREST call. The publishable key is in every
+--     browser, and the complaints INSERT policy checks who is filing,
+--     not where.
+--
+-- So the rule lived in one code path rather than in the column, and a
+-- direct insert of latitude 999 was accepted. A CHECK constraint is where
+-- a fact about the data belongs: it applies to every writer, including
+-- the ones written later.
+--
+--
+-- WHY 0,0 IS REJECTED AND NOT STORED AS NULL
+--
+-- Null Island is in the Gulf of Guinea. Nobody reports a pothole there,
+-- and a failed GPS read is indistinguishable from it — a device with no
+-- fix, a parse of an empty string, and a default-initialised struct all
+-- produce 0,0.
+--
+-- Rejecting rather than silently nulling: a client that thinks it
+-- recorded a location should be told it did not, at the point it tried,
+-- rather than discovering later that the complaint has no location. The
+-- same reasoning as the work-order timestamps in 20260816120000.
+--
+-- This is the database half of a rule the client now also applies (see
+-- src/lib/geo/coordinates.ts) — not a duplicate of it. The client's job
+-- is to say so before the citizen has filled in the rest of the form;
+-- this is what makes it true.
+--
+--
+-- NUMERIC PRECISION
+--
+-- The columns are `double precision`, which carries 15-17 significant
+-- digits — far more than coordinates need. Six decimal places is ~0.11 m
+-- at the equator and finer than any consumer GPS, so nothing is lost
+-- storing a fix at full precision and the client formats to six places
+-- for display. No change needed; recorded here because it is the kind of
+-- thing that gets "fixed" into `numeric(9,6)` by someone who has not
+-- checked, which would silently round every existing row.
+-- ============================================================
+
+
+-- ============================================================
+-- 1. COMPLAINTS
+-- ============================================================
+-- Both columns are nullable — a complaint may legitimately have no
+-- recorded location — so each check has to permit null and constrain the
+-- value only when there is one.
+--
+-- `not valid` first, then validated separately: on a table with existing
+-- rows this avoids a full-table ACCESS EXCLUSIVE lock at add time, and
+-- the validation pass takes only a SHARE UPDATE EXCLUSIVE. On an empty
+-- database it makes no difference; on a live one it is the difference
+-- between a blocked deployment and a background scan.
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'complaints_latitude_range'
+      and conrelid = 'public.complaints'::regclass
+  ) then
+    alter table public.complaints
+      add constraint complaints_latitude_range
+      check (latitude is null or (latitude >= -90 and latitude <= 90))
+      not valid;
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'complaints_longitude_range'
+      and conrelid = 'public.complaints'::regclass
+  ) then
+    alter table public.complaints
+      add constraint complaints_longitude_range
+      check (longitude is null or (longitude >= -180 and longitude <= 180))
+      not valid;
+  end if;
+
+  /*
+   * Coordinates come as a pair or not at all.
+   *
+   * A latitude with no longitude is not a location, and it is what a
+   * partially-populated insert produces. Nothing could plot it, so
+   * storing it means a row that looks located and is not.
+   */
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'complaints_coordinates_paired'
+      and conrelid = 'public.complaints'::regclass
+  ) then
+    alter table public.complaints
+      add constraint complaints_coordinates_paired
+      check ((latitude is null) = (longitude is null))
+      not valid;
+  end if;
+
+  -- Null Island. See the header.
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'complaints_not_null_island'
+      and conrelid = 'public.complaints'::regclass
+  ) then
+    alter table public.complaints
+      add constraint complaints_not_null_island
+      check (
+        latitude is null
+        or longitude is null
+        or not (latitude = 0 and longitude = 0)
+      )
+      not valid;
+  end if;
+end
+$$;
+
+
+/*
+ * Validate the constraints against existing rows.
+ *
+ * Wrapped so a database that already holds an out-of-range or 0,0
+ * complaint — filed through the fallback path before this existed — does
+ * not fail the whole migration. The constraint stays in place and
+ * enforced for every new write either way; `not valid` means exactly
+ * that, and an operator can find and correct the offending rows with
+ * supabase/diagnose.sql.
+ */
+do $$
+declare
+  constraint_name text;
+begin
+  foreach constraint_name in array array[
+    'complaints_latitude_range',
+    'complaints_longitude_range',
+    'complaints_coordinates_paired',
+    'complaints_not_null_island'
+  ]
+  loop
+    begin
+      execute format(
+        'alter table public.complaints validate constraint %I',
+        constraint_name
+      );
+    exception
+      when check_violation then
+        raise warning
+          'Existing complaints violate %; it is enforced for new writes only. Find them with supabase/diagnose.sql.',
+          constraint_name;
+    end;
+  end loop;
+end
+$$;
+
+
+-- ============================================================
+-- 2. THE SAME RULE, REUSABLE
+-- ============================================================
+-- So a query can ask "is this a place" without restating the four
+-- conditions, and so the analytics and hotspot functions that already
+-- exclude Null Island by hand have one definition to point at.
+
+create or replace function public.is_valid_coordinate(
+  p_latitude double precision,
+  p_longitude double precision
+)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select
+    p_latitude is not null
+    and p_longitude is not null
+    and p_latitude >= -90 and p_latitude <= 90
+    and p_longitude >= -180 and p_longitude <= 180
+    -- A failed GPS read, not a location in the Gulf of Guinea.
+    and not (p_latitude = 0 and p_longitude = 0);
+$$;
+
+comment on function public.is_valid_coordinate is
+  'Whether a coordinate pair names somewhere a report could be. Mirrors the complaints CHECK constraints and src/lib/geo/coordinates.ts.';
+
+revoke all on function public.is_valid_coordinate(
+  double precision, double precision
+) from public;
+grant execute on function public.is_valid_coordinate(
+  double precision, double precision
+) to authenticated;
+
+
+notify pgrst, 'reload schema';
+
 -- ============================================================
 -- TELL PostgREST TO RELOAD
 -- ============================================================

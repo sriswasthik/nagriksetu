@@ -29,7 +29,11 @@ import {
   ChartTooltip,
   GRID_PROPS,
 } from "@/components/charts/chartTheme";
-import { analyticsService } from "@/lib/services/analytics";
+import {
+  NO_DATA,
+  analyticsService,
+  describeSample,
+} from "@/lib/services/analytics";
 import type {
   AnalyticsSummary,
   DepartmentPerformance,
@@ -113,10 +117,17 @@ export default function GovernmentAnalyticsPage() {
     0
   );
 
-  // Slowest departments first — that is the actionable end.
-  const bySpeed = [...departments].sort(
-    (a, b) => b.avgResolutionHours - a.avgResolutionHours
-  );
+  /*
+   * Slowest departments first — that is the actionable end. A department
+   * with no resolved report has no resolution time, and sorting null as 0
+   * would put it at the fast end of the table as though it were the
+   * best-performing one.
+   */
+  const bySpeed = [...departments].sort((a, b) => {
+    if (a.avgResolutionHours === null) return b.avgResolutionHours === null ? 0 : 1;
+    if (b.avgResolutionHours === null) return -1;
+    return b.avgResolutionHours - a.avgResolutionHours;
+  });
 
   return (
     <div>
@@ -128,21 +139,47 @@ export default function GovernmentAnalyticsPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard
           label="Average resolution time"
-          value={summary.avgResolutionHours}
-          suffix="h"
+          value={summary.avgResolutionHours ?? NO_DATA}
+          suffix={summary.avgResolutionHours === null ? "" : "h"}
           decimals={1}
-          hint="From report to verified fix"
+          /*
+           * Measured from the recorded resolution moment in
+           * complaint_status_history, not from complaints.updated_at —
+           * which moved every time a resolved complaint was edited. The
+           * sample is stated because complaints closed before that history
+           * existed are excluded rather than approximated.
+           */
+          hint={
+            summary.avgResolutionHours === null
+              ? "No resolution has been recorded yet"
+              : `From report to resolution ${describeSample(
+                  summary.resolutionSampleSize,
+                  "resolved report"
+                )}`
+          }
           icon={Clock3}
           tone="brand"
         />
         <StatCard
           label="SLA compliance"
-          value={summary.slaCompliance}
-          suffix="%"
+          value={summary.slaCompliance ?? NO_DATA}
+          suffix={summary.slaCompliance === null ? "" : "%"}
           decimals={1}
-          hint="Target 90%"
+          hint={
+            summary.slaCompliance === null
+              ? "No report has both a deadline and a recorded resolution"
+              : `Target 90% ${describeSample(summary.slaSampleSize)}`
+          }
           icon={TrendingUp}
-          tone={summary.slaCompliance >= 90 ? "success" : "warning"}
+          /* Neutral where nothing was measured: "warning" on an
+             unmeasured figure is a judgement about performance. */
+          tone={
+            summary.slaCompliance === null
+              ? "brand"
+              : summary.slaCompliance >= 90
+                ? "success"
+                : "warning"
+          }
         />
         <StatCard
           label="30-day backlog change"
