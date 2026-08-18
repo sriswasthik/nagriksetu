@@ -76,7 +76,11 @@ export default function CitizenComplaintsList() {
   );
 
   useEffect(() => {
-    loadComplaints();
+    const timer = setTimeout(() => {
+      void loadComplaints();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [loadComplaints]);
 
   const counts = useMemo(() => {

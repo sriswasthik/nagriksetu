@@ -93,7 +93,7 @@ State codes: **1** real data · **2** partly mocked · **3** UI-only ·
 | AI analysis | 2 | `services/ai.ts` (1295 lines) | **Keyword rule engine, not a model** — `AI_MODEL_NAME = "citytrace-mock-ai-v2"`, self-described "MOCK AI ENGINE". Writes real columns on `complaints` | `complaints` | P1 | Submit "pothole"; check `ai_category`, `priority_level` |
 | Department routing | 5 | `services/ai.ts` ~L987 | Looks up `departments`, which is deny-all. Error is caught and warned, so `department_id` silently stays **null** — complaints are never routed | `departments` RLS | **P0** | Submit; `department_id` is null and console warns |
 | Complaint status + timeline | 1 | `app/citizen/complaints/[id]/page.tsx`, `lib/design/status.ts` | Nothing. Timeline derives from real `status` | `complaints` | — | Change `status` in SQL, reload |
-| Notifications | 2 | `app/citizen/notifications/page.tsx`, `components/shared/NotificationPanel.tsx` | Derived from complaint statuses. The `notifications` table exists but is deny-all; read state is session-only | `notifications` RLS | P1 | Submit a complaint; entry appears without a `notifications` row |
+| Notifications | 2 | `app/citizen/notifications/page.tsx`, `components/shared/NotificationPanel.tsx`, `services/notifications.ts`, migration `…130000` | **Closed.** Was derived from complaint statuses, with session-only read state. Database triggers now write one row per lifecycle event, deduplicated by the audit row that caused it; read state persists; officers get their assignments | `notifications` | — | Submit a complaint; a `notifications` row appears per transition |
 | Nearby issues map | 2 | `app/citizen/map/page.tsx` | Shows **only the user's own** reports; no area-scoped public feed exists. Labelled in-app | `complaints` RLS | P1 | Open map with two accounts — no overlap |
 | Reopen complaint | 4 | `services/complaints.ts` (`reopenComplaint`) | Service exists and is exported; **no UI calls it** | `complaints` | P1 | `grep -r reopenComplaint src/app` → no hits |
 | Profile | 3 | `components/shared/ProfileView.tsx` | Read-only by design; no update service | — | P2 | Open profile — no editable field |
@@ -179,8 +179,9 @@ State codes: **1** real data · **2** partly mocked · **3** UI-only ·
 
 **Phase 4 — completeness (P1/P2)**
 13. Wire the existing `reopenComplaint` service to the citizen UI.
-14. Password reset; `notifications` table + realtime; supervisor
-    verification UI; area-scoped public map feed.
+14. Password reset; area-scoped public map feed. (The `notifications`
+    table is now written by triggers — see the root README. Supervisor
+    verification is on the work-order page.)
 15. Reconcile the 10-item category picker with the 6-value DB enum.
 
 ## Mock/demo data to remove or keep marked
@@ -225,3 +226,4 @@ an operations dashboard read as real municipal statistics.
 are available in this environment, so all Supabase findings come from reading
 code, migrations and policies. They should be confirmed against a real
 project before the P0 work is signed off.
+   

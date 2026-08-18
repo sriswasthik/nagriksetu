@@ -100,7 +100,11 @@ export default function ComplaintDetailsPage() {
   );
 
   useEffect(() => {
-    loadDetails();
+    const timer = setTimeout(() => {
+      void loadDetails();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [loadDetails]);
 
   const runTriage = useCallback(async () => {
@@ -154,12 +158,16 @@ export default function ComplaintDetailsPage() {
 
     aiTriggered.current = true;
 
-    void runTriage().finally(() => {
-      if (arrivedFromSubmission) {
-        // Drop the param so a manual refresh reads as an ordinary visit.
-        router.replace(`/citizen/complaints/${complaintId}`, { scroll: false });
-      }
-    });
+    const timer = setTimeout(() => {
+      void runTriage().finally(() => {
+        if (arrivedFromSubmission) {
+          // Drop the param so a manual refresh reads as an ordinary visit.
+          router.replace(`/citizen/complaints/${complaintId}`, { scroll: false });
+        }
+      });
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [details, runTriage, arrivedFromSubmission, complaintId, router]);
 
   /*

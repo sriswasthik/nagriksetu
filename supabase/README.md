@@ -112,6 +112,8 @@ Appointing an officer or a supervisor is the same call with `'officer'` or
 | `20260814120900_complaint_number_default` | A column default for the complaint number, and wall-clock ordering for history |
 | `20260816120000_work_order_lifecycle` | The work-order state machine, the audit trail as a trigger, the complaint-status sync as a trigger, `advance_work_order()` and `assignable_officers()` |
 | `20260817120000_analytics_completeness` | Analytics measured rather than assumed: resolution time from recorded history, null where nothing was measured, exhaustive SLA buckets, and the status/priority/work-order/hotspot metrics that had no source |
+| `20260817130000_notification_lifecycle` | Notifications written by triggers, one row per lifecycle event, deduplicated by the audit row that caused them |
+| `20260817140000_coordinate_integrity` | CHECK constraints putting the coordinate rules in the column rather than in one function, plus `is_valid_coordinate()` |
 
 Each file opens with a comment explaining what was wrong and why the fix
 is shaped the way it is. Those comments are the reference; this table is
@@ -336,6 +338,142 @@ filter them in the browser. Rows are now capped and totals come from the
 aggregates, so a capped page no longer means a capped number — and the
 queue says when it is showing a subset.
 
+## Coordinates
+
+`submit_complaint()` has validated latitude and longitude since
+`20260814120800`. But a function only validates what goes through it, and
+two paths did not: `submitThroughInsert()` — the documented fallback for a
+deployment whose migrations are behind — and any hand-written PostgREST
+call, which every browser can make with the publishable key.
+
+So the rule lived in one code path rather than in the column, and a direct
+insert of latitude 999 was accepted. `20260817140000` adds four CHECK
+constraints:
+
+| Constraint | Refuses |
+| --- | --- |
+| `complaints_latitude_range` | Outside ±90 |
+| `complaints_longitude_range` | Outside ±180 — the antimeridian artefact Leaflet produces |
+| `complaints_coordinates_paired` | A latitude with no longitude; half a coordinate is not a location |
+| `complaints_not_null_island` | `0,0`, which is what a failed GPS read looks like |
+
+Added `not valid` and validated in a second pass, so on a live table the
+add takes no full-table ACCESS EXCLUSIVE lock. The validation is wrapped
+in an exception handler: a database that already holds a bad row keeps the
+constraint enforced for new writes rather than failing the whole
+migration, and `diagnose.sql` reports whether all four are present.
+
+`is_valid_coordinate()` is the same rule as a predicate, so the analytics
+and hotspot functions that already excluded Null Island by hand have one
+definition to point at.
+
+### Precision, deliberately unchanged
+
+The columns are `double precision` — 15-17 significant digits, where six
+decimal places is ~0.11 m and finer than any consumer GPS. Nothing is lost
+storing a fix at full precision, and the client formats to six places for
+display.
+
+Recorded here because it is exactly the kind of thing that gets "tidied"
+into `numeric(9,6)` by somebody who has not checked, which would silently
+round every existing row. `07_coordinates_test.sql` asserts the type and
+asserts a six-decimal round trip, so that change would fail loudly.
+
+### Latitude and longitude are not transposed
+
+Tested explicitly, at both layers, because it is the one geospatial bug
+that produces no error: 77 is a valid latitude, so transposing Bangalore's
+coordinates yields a perfectly acceptable row in the Arctic Ocean. The
+only way to catch it is to assert which column holds which — once on a
+direct insert and once through `submit_complaint()`, since a transposition
+inside the RPC would be invisible to any test that reads back through the
+same function.
+
+## Notifications
+
+`public.notifications` has existed since the initial schema, with
+per-recipient policies added in `20260814120000`. **Nothing ever wrote a
+row to it.** Both notification surfaces derived a feed from complaint
+state instead — one entry per report showing its current status — which
+was true as far as it went but was state rather than history: a report
+that passed through triage, assignment, work and closure produced a
+single entry, overwritten each time. A citizen who had been asked to
+confirm a repair saw it only if they happened to look before the next
+transition, and read state lived in a React `Set`, so it was lost on
+reload.
+
+### Triggers, not application writes
+
+Every event worth notifying about already fires a trigger, because the
+lifecycle lives in the database: `complaint_status_history` records one
+row per real complaint transition and `work_order_updates` one per
+work-order transition, both append-only and both in the same transaction
+as the change.
+
+| Trigger | On | Notifies |
+| --- | --- | --- |
+| `complaint_status_notify` | `complaint_status_history` insert | The reporting citizen, for every stage of their report |
+| `work_order_update_notify` | `work_order_updates` insert | The assigned officer, when somebody *else* made the transition |
+| `work_order_assignment_notify` | `work_orders` insert / `officer_id` change | The newly assigned officer |
+
+Notifying from the application would mean a second statement that can
+fail on its own — the same shape as the audit trail that used to be
+"best-effort" and was therefore missing exactly when something had gone
+wrong. A notification nobody receives because a browser closed
+mid-request is that failure again.
+
+**An officer is not told about their own actions.** A transition notifies
+them only when `created_by` is not the assignee: a tray that says "you
+accepted this" is a tray nobody reads.
+
+### Deduplication is structural
+
+Every notification carries an `event_key` derived from the primary key of
+the audit row that caused it, plus the recipient:
+
+```
+csh:<complaint_status_history.id>:<user_id>
+wou:<work_order_updates.id>:<user_id>
+woassign:<work_orders.id>:<officer_id>
+```
+
+A partial unique index makes a duplicate impossible rather than unlikely,
+and `emit_notification()` inserts with `on conflict do nothing` — so an
+at-least-once caller behaves as exactly-once without anybody comparing
+message text. Those audit rows are themselves one-per-real-transition: an
+UPDATE setting a status to the value it already holds is not `distinct
+from` its old value, so no history row is written and no notification
+follows.
+
+The assignment key is per work order per officer rather than per event,
+because an assignment writes no audit row of its own. The consequence is
+deliberate: bouncing a job between two officers who have both held it
+notifies neither again. One "this is yours" per officer per job.
+
+### Who can write, and who can read
+
+The insert policy was:
+
+```sql
+with check (public.is_staff() or user_id = auth.uid())
+```
+
+So any officer could write a notification, with any text, into any
+citizen's inbox. Nothing did — and now nothing needs to, since every
+notification comes from a trigger. It is replaced with self-insert only.
+
+`emit_notification()` is `SECURITY DEFINER` (the officer advancing a work
+order has no policy allowing them to insert a row addressed to the
+citizen, and should not) and is **granted to nobody**, so it is reachable
+from triggers alone.
+
+Reading and marking are `SECURITY INVOKER`: `unread_notification_count()`
+and `mark_notifications_read()` run as the caller, so the
+`user_id = auth.uid()` policies confine them. Passing another user's ids
+to the marking function changes nothing rather than erroring. There is no
+DELETE policy at all — an inbox its sender can empty is not a record of
+what the citizen was told.
+
 ## The work-order lifecycle
 
 Once a complaint is assigned, the work order is the record of the repair.
@@ -436,6 +574,8 @@ order, then runs each suite:
 | `03_complaint_lifecycle_test.sql` | The citizen's own path: submission, idempotency, coordinate validation, triage, and the status history a timeline reads |
 | `04_officer_lifecycle_test.sql` | The officer's path: the state machine, proof gating, the audit trail's actors, the citizen's view following along, and sign-off |
 | `05_analytics_test.sql` | That no figure is invented: nulls where nothing was measured, resolution time unmoved by later edits, buckets that sum to the whole, and aggregates scoped to the caller |
+| `06_notifications_test.sql` | That real events notify, that a retried event does not notify twice, and that nobody reads or marks another user's inbox |
+| `07_coordinates_test.sql` | That a direct insert cannot store `0,0`, a latitude of 999 or half a pair; that the poles and the equator still can; and that latitude and longitude are not transposed |
 
 Needs PostgreSQL server binaries; no Docker and no Supabase project.
 

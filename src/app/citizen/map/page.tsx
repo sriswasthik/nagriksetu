@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { formatCategory } from "@/lib/design/status";
 import { getMyComplaints } from "@/lib/services/complaints";
+import { isRenderableCoordinate } from "@/lib/geo/coordinates";
 import type { Complaint } from "@/types/complaint";
 
 type MapFilter = "all" | "open" | "resolved";
@@ -63,12 +64,24 @@ export default function CitizenMapPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [load]);
 
-  /** Only reports with coordinates can appear on a map. */
+  /**
+   * Only reports with usable coordinates can appear on a map.
+   *
+   * The same validation the map itself applies, rather than a null check —
+   * otherwise the filter counts and the empty state disagree with what is
+   * actually drawn, and a report at 0,0 is counted here and silently
+   * dropped there.
+   */
   const located = useMemo(
-    () => complaints.filter((c) => c.latitude !== null && c.longitude !== null),
+    () =>
+      complaints.filter((c) => isRenderableCoordinate(c.latitude, c.longitude)),
     [complaints]
   );
 

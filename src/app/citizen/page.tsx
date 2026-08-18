@@ -99,7 +99,11 @@ export default function CitizenDashboard() {
   }, []);
 
   useEffect(() => {
-    loadDashboard();
+    const timer = setTimeout(() => {
+      void loadDashboard();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [loadDashboard]);
 
   if (isLoading) {

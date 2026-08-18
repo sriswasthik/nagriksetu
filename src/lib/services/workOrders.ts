@@ -267,9 +267,22 @@ function mapWorkOrder(row: WorkOrderRow): WorkOrder {
       model: complaint?.ai_model ?? null,
     },
 
+    /*
+     * Coordinates stay nullable.
+     *
+     * They were coalesced to 0, which is not a missing value — it is Null
+     * Island, in the Gulf of Guinea. So an unlocated work order arrived at
+     * the map as a well-typed pair of numbers that every downstream check
+     * accepted, and `fitBounds` over the city plus that point framed a
+     * hemisphere: one row without coordinates collapsed every real marker
+     * to a pixel.
+     *
+     * Null is the honest value, and the maps now render "No location
+     * recorded" for it rather than a confident pin in the wrong ocean.
+     */
     location: {
-      latitude: complaint?.latitude ?? 0,
-      longitude: complaint?.longitude ?? 0,
+      latitude: complaint?.latitude ?? null,
+      longitude: complaint?.longitude ?? null,
       address: complaint?.address ?? "Location not recorded",
       ward: complaint?.ward?.name ?? undefined,
     },

@@ -38,16 +38,22 @@ export function AnimatedCounter({
 
   useEffect(() => {
     if (prefersReducedMotion) {
-      setDisplay(value);
-      return;
+      const timer = setTimeout(() => {
+        setDisplay(value);
+      }, 0);
+
+      return () => clearTimeout(timer);
     }
 
     if (!isInView) return;
 
     // Nothing to animate toward.
     if (value === 0) {
-      setDisplay(0);
-      return;
+      const timer = setTimeout(() => {
+        setDisplay(0);
+      }, 0);
+
+      return () => clearTimeout(timer);
     }
 
     const durationMs = DURATION.deliberate * 1000;

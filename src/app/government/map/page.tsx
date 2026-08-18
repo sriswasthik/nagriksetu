@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { workOrderService } from "@/lib/services/workOrders";
 import { analyticsService, formatCount } from "@/lib/services/analytics";
+import { isRenderableCoordinate } from "@/lib/geo/coordinates";
 import type { WorkOrder } from "@/types/workOrder";
 import type { Hotspot } from "@/types/analytics";
 
@@ -81,26 +82,49 @@ export default function GovernmentMapPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = setTimeout(() => {
+      void load();
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [load]);
 
+  /*
+   * Only the ones the map can actually draw.
+   *
+   * The chips counted every fetched work order, so "All 41" sat above a
+   * map showing 38 markers with nothing to explain the difference —
+   * `mapWorkOrder()` was coalescing missing coordinates to 0,0 and the map
+   * drew those in the Gulf of Guinea. Now they are excluded from both, and
+   * the count says how many were left out.
+   */
+  const mappable = useMemo(
+    () =>
+      workOrders.filter((wo) =>
+        isRenderableCoordinate(wo.location.latitude, wo.location.longitude)
+      ),
+    [workOrders]
+  );
+
+  const unmapped = workOrders.length - mappable.length;
+
   const visible = useMemo(
-    () => workOrders.filter(MATCHERS[filter]),
-    [workOrders, filter]
+    () => mappable.filter(MATCHERS[filter]),
+    [mappable, filter]
   );
 
   const filterOptions: FilterOption<HotspotFilter>[] = [
-    { value: "all", label: "All", count: workOrders.length },
+    { value: "all", label: "All", count: mappable.length },
     {
       value: "urgent",
       label: "Urgent",
-      count: workOrders.filter(MATCHERS.urgent).length,
+      count: mappable.filter(MATCHERS.urgent).length,
       tone: "attention",
     },
     {
       value: "breaching",
       label: "Near breach",
-      count: workOrders.filter(MATCHERS.breaching).length,
+      count: mappable.filter(MATCHERS.breaching).length,
     },
   ];
 
@@ -194,7 +218,18 @@ export default function GovernmentMapPage() {
         />
       )}
 
-      {workOrders.length === 0 && !error ? (
+      {/*
+        Said rather than hidden. A queue of 41 above a map of 38 markers
+        needs the three explained, or the map reads as dropping work.
+      */}
+      {unmapped > 0 && !error && (
+        <p className="mb-4 text-xs text-muted-foreground">
+          {unmapped} {unmapped === 1 ? "work order has" : "work orders have"} no
+          recorded coordinates and cannot be mapped.
+        </p>
+      )}
+
+      {mappable.length === 0 && !error ? (
         <EmptyState
           icon={MapPin}
           title="No mapped work orders"
